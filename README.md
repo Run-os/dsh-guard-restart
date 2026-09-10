@@ -3,7 +3,7 @@
 DSH 插件：**守护重启 + 复活币自愈 + 自动设置守护链**。
 
 - 检测 `dsh-fuhuobi`（复活币）是否安装；缺失时自动执行 `dsh plugin --profile web add dsh-fuhuobi`（每次启动后 4s 自动检测一次，也提供手动按钮）。
-- 在左侧边栏 **「设置」上方** 添加一行「守护重启」按钮（独占一行，不与 `dsh-cost-meter` 挤在同一行）。
+- 在左侧边栏 **「设置」行内**放一个「守护重启」小圆钮（与设置按钮同一行，参考 dsh-fuhuobi 的注入方式；不占用脚区独立行，不与其他插件按钮并排冲突）。
 - 在 **设置 → 插件** 界面新增「守护重启」菜单（卡片）：展示 **当前 systemd 配置状态** 与 **dsh-fuhuobi 是否已安装**（含守护链完整性），每次打开/刷新实时读取 `/status`。
 - 重启走 **dsh-fuhuobi 的守护进程**：`systemctl restart dsh-web.service` → run-dsh-web.sh（清端口）→ boot-guard.sh（两阶段健康检查 → 失败自动回滚重试 → 成功自动铸复活币）。
 - **侧边栏底部按钮各占一行**（`footerStack`，**实验性，默认关闭**，可在 设置→插件「守护重启」卡片里开启）：尝试让 `sidebar.footer.action` 槽容器内的插件按钮各自独占一行，规避不同插件（如 `dsh-cost-meter` 徽章与 `dsh-auto-memory` 按钮）并排显示。⚠️ v0.4.0 曾默认开启并把容器改为纵向布局，实测会把位于第二行的 auto-memory 按钮**挤出可视区**（移除该 class 后按钮即恢复），因此改为默认关闭 + `flex-wrap` 温和实现。
@@ -21,14 +21,20 @@ dsh plugin --profile web add /root/deepseek/project/dsh-guard-restart
 
 重启 DSH（`systemctl restart dsh-web`）后生效。
 
-## 侧边栏位置说明
+## 侧边栏位置说明（v0.5.0 起）· 按钮在「设置」行内
 
-DSH 侧边栏底部（foot）是纵向布局：`sidebar.footer.action`（操作行，cost-meter 徽章所在）→ `sidebar.settings`（设置行）。
-本插件先注册进 `sidebar.footer.action`（获得渲染生命周期），但在客户端只用它渲染一个**不可见锚点**，真正可见的按钮行
-由命令式 DOM 创建并**插到脚区最前**（`footArea` 的第一个子元素）——因此最终行序为
-**「守护重启行 → cost-meter 行 → 设置行」**：按钮独占 `dsh-cost-meter` 上方的一行，且完全不进入
-footer-actions 容器（避免与 cost-meter 徽章争抢同一行，也避免与其内部的 MutationObserver 自排序逻辑相互干扰）。
-折叠（rail）模式下显示为 ↻ 小圆钮。
+DSH 侧边栏底部（foot）是纵向布局：`sidebar.footer.action`（操作行，cost-meter 徽章与
+auto-memory 按钮所在）→ `sidebar.settings`（设置行）。本插件先注册进
+`sidebar.footer.action` 只为一个**不可见锚点**（获得渲染生命周期），**可见按钮**
+改为命令式注入到 **`settingsArea`（设置行）内**：绝对定位小圆钮（28px，↻），与
+设置按钮同一行，且**避让**同行的 `[data-nio-rst]`（硬性重启钮）与
+`[data-fuhuobi-rst]`（dsh-fuhuobi 存币钮），各自不重叠。
+MutationObserver + 3s 心跳保证在其它 UI 插件重渲染时按钮存活（机制参考
+dsh-fuhuobi 的 guarded-restart supervisor，绝不修改任何其它插件的 DOM）。
+
+交互（与旧版一致）：复活币缺失时点按 = 自动安装；就绪后第一次点按进入确认态
+（红色 ✓），5 秒内再点一次才触发守护重启；重启期间全屏遮罩 + 轮询 `/ping`
+自动刷新。
 
 ## 服务端路由（同源保护）
 
