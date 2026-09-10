@@ -62,6 +62,9 @@ const zh = {
   setupReady: '守护链完整：boot-guard → run-dsh-web.sh → systemd 单元',
   setupMissing: '守护链有缺件，缺失时会在启动后自动补齐',
   autoNote: '自动检测：每次 DSH 启动后 4 秒检查复活币、6 秒检查守护链（systemd 配置）；本卡片每次打开 / 刷新都会实时读取最新状态。',
+  footerStack: '侧边栏底部按钮各占一行',
+  footerStackOn: '开启（每个插件按钮独占一行）',
+  footerStackOff: '关闭（与其他插件并排）',
 }
 
 const en = {
@@ -94,6 +97,9 @@ const en = {
   setupReady: 'Guard chain complete: boot-guard → run-dsh-web.sh → systemd unit',
   setupMissing: 'Guard chain has gaps; they are auto-provisioned after startup',
   autoNote: 'Auto-check: after every DSH start, fuhuobi is checked at 4s and the guard chain (systemd config) at 6s; opening / refreshing this card always reads the latest state.',
+  footerStack: 'Sidebar footer buttons one per row',
+  footerStackOn: 'On (each plugin button gets its own row)',
+  footerStackOff: 'Off (side-by-side with other plugins)',
 }
 
 const CSS = `
@@ -133,6 +139,10 @@ const CSS = `
 .dgs-refresh{border:1px solid var(--dsw-alias-border-l2,#d0d5dd);background:var(--dsw-alias-bg-layer-2,#f8fafc);color:var(--dsw-alias-label-primary,#1f2328);border-radius:8px;padding:5px 12px;font:inherit;font-size:12px;font-weight:600;cursor:pointer;align-self:flex-start;display:inline-flex;align-items:center;gap:6px}
 .dgs-refresh:disabled{opacity:.6;cursor:default}
 .dgs-mono{font-variant-numeric:tabular-nums;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+/* 脚区按钮独占一行：加在 sidebar.footer.action 槽容器上，让每个插件的
+   按钮/徽章各自一行（默认开启，可在 设置→插件「守护重启」卡片里关掉） */
+.dgr-footer-stack{display:flex;flex-direction:column;align-items:stretch;gap:2px;width:100%}
+.dgr-footer-stack>*{flex:none;width:100%;box-sizing:border-box}
 `
 
 function injectStyles() {
@@ -144,7 +154,7 @@ function injectStyles() {
   document.head.appendChild(tag)
 }
 
-function GuardRestartRow({ t, wide }) {
+function GuardRestartRow({ t, wide, scope }) {
   // Logic state (React-owned).
   const [armed, setArmed] = useState(false)
   const [restarting, setRestarting] = useState(false)
@@ -154,6 +164,9 @@ function GuardRestartRow({ t, wide }) {
   const [ensureBusy, setEnsureBusy] = useState(false)
   const [ensureError, setEnsureError] = useState(false)
   const oldBoot = useRef(null)
+  // footerStack 开关：是否让 sidebar.footer.action 槽容器竖排（各插件独占一行）。
+  // 读取 settingsScope（default true）；无 settings 服务时保持默认开启。
+  const stackRef = useRef(true)
 
   // Imperative node + anchor: the anchor is React-owned (inside the slot
   // container where the shell expects us); the real node is not.
@@ -217,6 +230,26 @@ function GuardRestartRow({ t, wide }) {
   useEffect(() => { ensureRef.current = ensureFuhuobi }, [ensureFuhuobi])
   useEffect(() => { restartRef.current = onRestart }, [onRestart])
 
+  // 订阅 settingsScope 的 footerStack 字段并应用到槽容器布局；
+  // 设置-插件卡片里改开关时这里会即时生效（无需刷新）。
+  useEffect(() => {
+    if (!scope) return
+    let alive = true
+    const apply = () => {
+      if (!alive) return
+      try {
+        const snap = scope.getSnapshot ? scope.getSnapshot() : null
+        const v = snap && snap.value && typeof snap.value.footerStack === 'boolean' ? snap.value.footerStack : true
+        stackRef.current = v
+        const anchor = anchorRef.current
+        if (anchor && anchor.parentElement) anchor.parentElement.classList.toggle('dgr-footer-stack', v)
+      } catch { /* keep current */ }
+    }
+    apply()
+    const unsub = scope.subscribe ? scope.subscribe(apply) : null
+    return () => { alive = false; if (unsub) unsub() }
+  }, [scope])
+
   // Create the visible node and seat it above the footer-actions row.
   useEffect(() => {
     injectStyles()
@@ -234,6 +267,11 @@ function GuardRestartRow({ t, wide }) {
     }
     const seat = () => {
       if (!mountedRef.current) return
+      // footerStack：让 anchor 所在槽容器（sidebar.footer.action）竖排，
+      // 各插件的按钮/徽章各自独占一行；开关在设置-插件卡片里。
+      if (anchor.parentElement) {
+        anchor.parentElement.classList.toggle('dgr-footer-stack', !!stackRef.current)
+      }
       // 槽渲染器可能包裹一层，往祖先链上找到真正的脚区（class 含 footArea）。
       let foot = anchor.parentElement
       while (foot && !clsOf(foot).includes('footArea')) {
@@ -379,12 +417,34 @@ function GuardRestartRow({ t, wide }) {
 
 function GuardStatusCard({ scope, t }) {
   // 设置 > 插件 > 插件配置：「守护重启」状态卡片。
-  // 只展示两项信息（systemd 配置状态、fuhuobi 是否已安装），不编辑配置：
+  // 展示 systemd 配置状态、fuhuobi 是否已安装，并可切换 footerStack 开关
+  // （侧边栏底部按钮各占一行）；其余信息只读、不编辑配置：
   // 数据来自宿主 /dsh-guard-restart/status（每次请求实时计算，非缓存）。
   const [open, setOpen] = useState(false)
   const [status, setStatus] = useState(null)
   const [busy, setBusy] = useState(false)
   const [failed, setFailed] = useState(false)
+  const [fsSaving, setFsSaving] = useState(false)
+
+  // footerStack 开关：读 settingsScope（namespace 由宿主注册）。
+  const subscribe = React.useMemo(
+    () => (scope && scope.subscribe ? scope.subscribe.bind(scope) : (() => () => {})),
+    [scope],
+  )
+  const getSnapshot = React.useMemo(
+    () => (scope && scope.getSnapshot ? scope.getSnapshot.bind(scope) : (() => null)),
+    [scope],
+  )
+  let snap = null
+  try { snap = React.useSyncExternalStore(subscribe, getSnapshot) } catch { snap = null }
+  const cfgReady = !!(snap && snap.status === 'ready')
+  const footerStack = cfgReady && snap.value && typeof snap.value.footerStack === 'boolean' ? snap.value.footerStack : true
+  const toggleFooterStack = async () => {
+    if (!cfgReady || fsSaving || !scope) return
+    setFsSaving(true)
+    try { await scope.set('footerStack', !footerStack) } catch { /* best effort */ }
+    setFsSaving(false)
+  }
 
   const load = useCallback(async () => {
     setBusy(true)
@@ -452,6 +512,15 @@ function GuardStatusCard({ scope, t }) {
             : h('span', { className: 'dgs-badge dgs-warn' }, t('setupMissing')),
         ),
       ),
+      h('div', { className: 'dgs-row' },
+        h('span', { className: 'dgs-label' }, t('footerStack')),
+        h('span', { className: 'dgs-value' },
+          h('label', { style: { display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '13px', cursor: 'pointer' } },
+            h('input', { type: 'checkbox', checked: footerStack, disabled: !cfgReady || fsSaving, onChange: toggleFooterStack, style: { cursor: 'pointer' } }),
+            h('span', null, footerStack ? t('footerStackOn') : t('footerStackOff')),
+          ),
+        ),
+      ),
       h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' } },
         h('button', {
           type: 'button',
@@ -470,18 +539,20 @@ exports.inject = ['slots', 'locale', 'settingsScope']
 exports.apply = function apply(ctx) {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-guard-restart: dictionaries')
   const t = ctx.locale.bind(NS)
+  // settingsScope 一次 bind，供侧边栏按钮（footerStack 布局）与设置-插件卡片共用；
+  // 无 settings 服务时 scope 为 null，两侧都按默认值工作。
+  let scope = null
+  try { scope = ctx.settingsScope.bind({ namespace: NS }) } catch { /* no settings service */ }
   ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
     name: 'sidebar.footer.action',
     id: 'dsh-guard-restart',
     order: 0,
     label: () => '守护重启',
-  }, ({ wide }) => h(GuardRestartRow, { t, wide })))
+  }, ({ wide }) => h(GuardRestartRow, { t, wide, scope })))
 
-  // 设置 > 插件 > 插件配置：「守护重启」状态卡片（仅展示，不编辑配置）。
+  // 设置 > 插件 > 插件配置：「守护重启」状态卡片（含 footerStack 开关）。
   // namespace 由宿主侧 settings.register('dsh-guard-restart', …) 提供；
   // 无 settings 服务时静默跳过，不影响侧边栏按钮。
-  let scope = null
-  try { scope = ctx.settingsScope.bind({ namespace: NS }) } catch { /* no settings service */ }
   if (scope) {
     ctx.slots.inject('settings.plugin.item', function* () {
       yield ctx.slots.register({
