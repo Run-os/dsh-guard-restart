@@ -1,0 +1,43 @@
+{
+  "name": "dsh-guard-restart",
+  "version": "0.1.0",
+  "description": "DSH 守护重启：检测并自动安装 dsh-fuhuobi（复活币），在左侧侧边栏「设置」上方提供一键重启按钮，重启走 dsh-fuhuobi 的守护启动（boot-guard：健康检查→失败自动回滚）。Guard-restart for DeepSeek Harness: ensures dsh-fuhuobi is installed and adds a sidebar restart button above Settings that restarts through the fuhuobi guarded boot.",
+  "type": "module",
+  "main": "lib/index.js",
+  "license": "MIT",
+  "keywords": [
+    "deepseek",
+    "harness",
+    "dsh",
+    "dsh-plugin",
+    "restart",
+    "fuhuobi",
+    "guard"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./client/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "client",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
