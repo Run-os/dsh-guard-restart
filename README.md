@@ -6,7 +6,7 @@ DSH 插件：**守护重启 + 复活币自愈 + 自动设置守护链**。
 - 在左侧边栏 **「设置」上方** 添加一行「守护重启」按钮（独占一行，不与 `dsh-cost-meter` 挤在同一行）。
 - 在 **设置 → 插件** 界面新增「守护重启」菜单（卡片）：展示 **当前 systemd 配置状态** 与 **dsh-fuhuobi 是否已安装**（含守护链完整性），每次打开/刷新实时读取 `/status`。
 - 重启走 **dsh-fuhuobi 的守护进程**：`systemctl restart dsh-web.service` → run-dsh-web.sh（清端口）→ boot-guard.sh（两阶段健康检查 → 失败自动回滚重试 → 成功自动铸复活币）。
-- **侧边栏底部按钮各占一行**（`footerStack`，默认开启，可在 设置→插件「守护重启」卡片里关掉）：把 `sidebar.footer.action` 槽容器改为纵向布局，规避不同插件（如 `dsh-cost-meter` 徽章与 `dsh-auto-memory` 按钮）把各自按钮显示在同一行。
+- **侧边栏底部按钮各占一行**（`footerStack`，**实验性，默认关闭**，可在 设置→插件「守护重启」卡片里开启）：尝试让 `sidebar.footer.action` 槽容器内的插件按钮各自独占一行，规避不同插件（如 `dsh-cost-meter` 徽章与 `dsh-auto-memory` 按钮）并排显示。⚠️ v0.4.0 曾默认开启并把容器改为纵向布局，实测会把位于第二行的 auto-memory 按钮**挤出可视区**（移除该 class 后按钮即恢复），因此改为默认关闭 + `flex-wrap` 温和实现。
 - 启动后 4s 自动检测 fuhuobi、6s 自动自检守护链，**缺什么自动补什么**（boot-guard.sh / run-dsh-web.sh / systemd 单元 / enable；无 systemd 时回退 cron `@reboot`）——对齐 `dsh-daemon` 的 `install` 一键设置思路，幂等且不打断当前会话。
 
 ## 安装
@@ -74,7 +74,7 @@ footer-actions 容器（避免与 cost-meter 徽章争抢同一行，也避免�
 | systemd 配置状态 | `/status → systemd` | 单元名 + 已配置/未配置 · 运行中/未运行 · 开机自启/未设自启 |
 | fuhuobi 是否已安装 | `/status → fuhuobi` | 已安装/未安装 + `dep`/`bundle` 徽章 |
 | （附加）守护链完整性 | `/status → setup.fullyReady` | 完整 ✓ / 有缺件（缺失自动补齐） |
-| **侧边栏按钮各占一行**（开关） | settings `footerStack` | 默认开启；关闭后 `sidebar.footer.action` 槽容器恢复并排 |
+| **侧边栏按钮各占一行**（开关） | settings `footerStack` | **默认关闭**（实验性）；开启后 `sidebar.footer.action` 槽容器内各插件按钮换行独占一行 |
 
 卡片每次打开自动拉取一次，也可点「↻ 刷新」手动拉取（对应"自动检测"的可视化）。
 

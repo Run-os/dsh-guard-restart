@@ -139,10 +139,11 @@ const CSS = `
 .dgs-refresh{border:1px solid var(--dsw-alias-border-l2,#d0d5dd);background:var(--dsw-alias-bg-layer-2,#f8fafc);color:var(--dsw-alias-label-primary,#1f2328);border-radius:8px;padding:5px 12px;font:inherit;font-size:12px;font-weight:600;cursor:pointer;align-self:flex-start;display:inline-flex;align-items:center;gap:6px}
 .dgs-refresh:disabled{opacity:.6;cursor:default}
 .dgs-mono{font-variant-numeric:tabular-nums;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-/* 脚区按钮独占一行：加在 sidebar.footer.action 槽容器上，让每个插件的
-   按钮/徽章各自一行（默认开启，可在 设置→插件「守护重启」卡片里关掉） */
-.dgr-footer-stack{display:flex;flex-direction:column;align-items:stretch;gap:2px;width:100%}
-.dgr-footer-stack>*{flex:none;width:100%;box-sizing:border-box}
+/* 脚区按钮独占一行（实验性，默认关闭）：加在 sidebar.footer.action 槽容器上。
+   注意不做 flex-direction:column —— v0.4.0 实测 column 会把第二行的
+   auto-memory 按钮挤出可视区；这里改用 flex-wrap + 每子项整行宽。 */
+.dgr-footer-stack{flex-wrap:wrap;row-gap:2px;overflow:visible}
+.dgr-footer-stack>*{flex:0 0 100%;box-sizing:border-box}
 `
 
 function injectStyles() {
@@ -164,9 +165,10 @@ function GuardRestartRow({ t, wide, scope }) {
   const [ensureBusy, setEnsureBusy] = useState(false)
   const [ensureError, setEnsureError] = useState(false)
   const oldBoot = useRef(null)
-  // footerStack 开关：是否让 sidebar.footer.action 槽容器竖排（各插件独占一行）。
-  // 读取 settingsScope（default true）；无 settings 服务时保持默认开启。
-  const stackRef = useRef(true)
+  // footerStack 开关：是否让 sidebar.footer.action 槽容器换行堆叠（各插件
+  // 独占一行）。读取 settingsScope（默认 false，实验性）；无 settings
+  // 服务时保持默认关闭。
+  const stackRef = useRef(false)
 
   // Imperative node + anchor: the anchor is React-owned (inside the slot
   // container where the shell expects us); the real node is not.
@@ -239,7 +241,7 @@ function GuardRestartRow({ t, wide, scope }) {
       if (!alive) return
       try {
         const snap = scope.getSnapshot ? scope.getSnapshot() : null
-        const v = snap && snap.value && typeof snap.value.footerStack === 'boolean' ? snap.value.footerStack : true
+        const v = snap && snap.value && typeof snap.value.footerStack === 'boolean' ? snap.value.footerStack : false
         stackRef.current = v
         const anchor = anchorRef.current
         if (anchor && anchor.parentElement) anchor.parentElement.classList.toggle('dgr-footer-stack', v)
@@ -438,7 +440,7 @@ function GuardStatusCard({ scope, t }) {
   let snap = null
   try { snap = React.useSyncExternalStore(subscribe, getSnapshot) } catch { snap = null }
   const cfgReady = !!(snap && snap.status === 'ready')
-  const footerStack = cfgReady && snap.value && typeof snap.value.footerStack === 'boolean' ? snap.value.footerStack : true
+  const footerStack = cfgReady && snap.value && typeof snap.value.footerStack === 'boolean' ? snap.value.footerStack : false
   const toggleFooterStack = async () => {
     if (!cfgReady || fsSaving || !scope) return
     setFsSaving(true)
