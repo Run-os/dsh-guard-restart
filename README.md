@@ -121,6 +121,25 @@ dsh-fuhuobi），因此在 **设置 → 插件 → 插件配置** 列表中出�
 - `DSH_GUARD_PLATFORM`（默认 `auto`）：强制平台判定（`systemd` / `cron` / `launchd` / `none`，测试用）。
 - 依赖 `dsh` CLI 在 PATH 上（自动安装 fuhuobi 时用）。
 
+## 依赖与 link: 安装（2026-09-11 故障复盘）
+
+本插件唯一外部依赖是 `@deepseek-ai/schemastery`（settings schema，仅用于把
+「守护重启」卡片登记进 设置→插件），但**不依赖源目录的 node_modules**：
+
+- 以 `dsh plugin add <本地目录>` 安装时生成的是 `link:` 依赖，**不会**安装
+  源目录自己的 dependencies。曾因此故障：顶层 `import z from
+  '@deepseek-ai/schemastery'` → link 目录解析不到 → 插件树加载失败 → dsh
+  崩溃循环（全站不可用约 7 分钟，2026-09-11 03:29 CST 复盘）。
+- **根因修复**：已移除顶层 import，改为运行时用 `createRequire` **以 profile
+  目录为解析锚点**同步解析 schemastery（dsh 生态 profile 的 node_modules
+  自带该包，本机已验证 `@deepseek-ai/schemastery@3.18.2`）。源目录有没有
+  node_modules 都不再影响插件加载；解析失败（低版本 Node 的 require(esm)
+  限制等）只降级隐藏「设置-插件」卡片，**绝不拖垮 dsh**。
+- `package.json` 仍声明该依赖（npm/registry 安装时由 pnpm 正常装上），
+  `pnpm-lock.yaml` 一并提交以固定版本。
+- 排查入口：宿主日志 `[dsh-guard-restart]` 前缀——settings 注册成功、
+  降级原因、namespace 注册失败都会打日志。
+
 ## 卸载 / 回滚
 
 ```sh
