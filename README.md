@@ -4,8 +4,9 @@ DSH 插件：**守护重启 + 复活币自愈 + 自动设置守护链**。
 
 - 检测 `dsh-fuhuobi`（复活币）是否安装；缺失时自动执行 `dsh plugin --profile web add dsh-fuhuobi`（每次启动后 4s 自动检测一次，也提供手动按钮）。
 - 在左侧边栏 **「设置」上方** 添加一行「守护重启」按钮（独占一行，不与 `dsh-cost-meter` 挤在同一行）。
+- 在 **设置 → 插件** 界面新增「守护重启」菜单（卡片）：展示 **当前 systemd 配置状态** 与 **dsh-fuhuobi 是否已安装**（含守护链完整性），每次打开/刷新实时读取 `/status`。
 - 重启走 **dsh-fuhuobi 的守护进程**：`systemctl restart dsh-web.service` → run-dsh-web.sh（清端口）→ boot-guard.sh（两阶段健康检查 → 失败自动回滚重试 → 成功自动铸复活币）。
-- 启动后 6s 自检，**守护链缺什么自动补什么**（boot-guard.sh / run-dsh-web.sh / systemd 单元 / enable；无 systemd 时回退 cron `@reboot`）——对齐 `dsh-daemon` 的 `install` 一键设置思路，幂等且不打断当前会话。
+- 启动后 4s 自动检测 fuhuobi、6s 自动自检守护链，**缺什么自动补什么**（boot-guard.sh / run-dsh-web.sh / systemd 单元 / enable；无 systemd 时回退 cron `@reboot`）——对齐 `dsh-daemon` 的 `install` 一键设置思路，幂等且不打断当前会话。
 
 ## 安装
 
@@ -60,6 +61,35 @@ footer-actions 容器（避免与 cost-meter 徽章争抢同一行，也避免�
 3. **先补复活币**：守护链的前提是 `dsh-fuhuobi` 可用（调用现有的 ensure-fuhuobi）。
 
 单元未 enable 而已启用时只补上 enable；`/status` 的 `setup.fullyReady` 反映整条链是否完整。
+
+## 设置 → 插件：守护重启菜单
+
+宿主在启动时注册 `settings` namespace `dsh-guard-restart`（空配置文档，机制同
+dsh-fuhuobi），因此在 **设置 → 插件 → 插件配置** 列表中出现「守护重启」卡片。
+卡片**只展示、不编辑配置**，数据来自 `GET /dsh-guard-restart/status`（实时计算，非缓存）：
+
+| 菜单内信息 | 数据来源 | 展示 |
+| --- | --- | --- |
+| systemd 配置状态 | `/status → systemd` | 单元名 + 已配置/未配置 · 运行中/未运行 · 开机自启/未设自启 |
+| fuhuobi 是否已安装 | `/status → fuhuobi` | 已安装/未安装 + `dep`/`bundle` 徽章 |
+| （附加）守护链完整性 | `/status → setup.fullyReady` | 完整 ✓ / 有缺件（缺失自动补齐） |
+
+卡片每次打开自动拉取一次，也可点「↻ 刷新」手动拉取（对应"自动检测"的可视化）。
+
+### 插件安装 / 启动后会自动检测这两项信息吗？
+
+**会。** 两条路径，双层保障：
+
+1. **服务端自动检测（无需打开界面）**：每次 `dsh web` 启动后
+   - **4s**：自动检测 fuhuobi 是否安装（缺失则自动 `dsh plugin add dsh-fuhuobi`）；
+   - **6s**：自动检测守护链（systemd 单元等配置状态，缺失自动补齐）。
+   - 日志在插件宿主日志（`[dsh-guard-restart]` 前缀）。
+2. **界面实时检测**：每次打开/刷新「守护重启」卡片都实时请求 `/status`，
+   两项信息均为**当前实时计算值**（`systemctl is-active/is-enabled` + profile 检查），
+   不是启动时的缓存快照。
+
+安装（`dsh plugin add`）本身不触发检测——插件进程不存在；检测在插件被加载的
+**下一次 DSH 启动**时自动进行，也可通过卡片「↻ 刷新」随时手动触发。
 
 ## 守护重启如何工作
 

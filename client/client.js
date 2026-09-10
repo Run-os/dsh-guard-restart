@@ -44,6 +44,24 @@ const zh = {
   refresh: '手动刷新',
   hint: '守护重启：systemctl restart 走 dsh-fuhuobi boot-guard（健康检查→失败回滚→成功存复活币）',
   missing: '缺少 dsh-fuhuobi（复活币）',
+  cardTitle: '守护重启',
+  cardLoading: '检测中…',
+  cardFailed: '读取状态失败',
+  cardRefresh: '刷新',
+  sysd: 'systemd 配置',
+  sysdUnit: '单元',
+  sysdPresent: '已配置',
+  sysdAbsent: '未配置',
+  sysdActive: '运行中',
+  sysdInactive: '未运行',
+  sysdEnabled: '开机自启',
+  sysdDisabled: '未设自启',
+  fuhuobi: 'dsh-fuhuobi（复活币）',
+  fuhuobiInstalled: '已安装',
+  fuhuobiMissing: '未安装',
+  setupReady: '守护链完整：boot-guard → run-dsh-web.sh → systemd 单元',
+  setupMissing: '守护链有缺件，缺失时会在启动后自动补齐',
+  autoNote: '自动检测：每次 DSH 启动后 4 秒检查复活币、6 秒检查守护链（systemd 配置）；本卡片每次打开 / 刷新都会实时读取最新状态。',
 }
 
 const en = {
@@ -58,6 +76,24 @@ const en = {
   refresh: 'Refresh now',
   hint: 'Guarded restart: systemctl restart via dsh-fuhuobi boot-guard (health check, auto rollback, revival coin).',
   missing: 'dsh-fuhuobi (revival coin) is missing',
+  cardTitle: 'Guard restart',
+  cardLoading: 'Checking…',
+  cardFailed: 'Failed to read status',
+  cardRefresh: 'Refresh',
+  sysd: 'systemd config',
+  sysdUnit: 'Unit',
+  sysdPresent: 'Present',
+  sysdAbsent: 'Absent',
+  sysdActive: 'Active',
+  sysdInactive: 'Inactive',
+  sysdEnabled: 'Enabled',
+  sysdDisabled: 'Disabled',
+  fuhuobi: 'dsh-fuhuobi (revival coin)',
+  fuhuobiInstalled: 'Installed',
+  fuhuobiMissing: 'Missing',
+  setupReady: 'Guard chain complete: boot-guard → run-dsh-web.sh → systemd unit',
+  setupMissing: 'Guard chain has gaps; they are auto-provisioned after startup',
+  autoNote: 'Auto-check: after every DSH start, fuhuobi is checked at 4s and the guard chain (systemd config) at 6s; opening / refreshing this card always reads the latest state.',
 }
 
 const CSS = `
@@ -80,6 +116,23 @@ const CSS = `
 .dgr-elapsed{font-size:12px;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-secondary,#6b7280)}
 .dgr-stuck{font-size:12px;color:var(--dsw-alias-state-warn-primary,#b45309);line-height:1.6;margin:0}
 .dgr-refresh{border:none;border-radius:8px;padding:8px 18px;font:inherit;font-size:13px;font-weight:600;cursor:pointer;background:var(--dsw-alias-button-primary-fill,#4f6ef7);color:var(--dsw-alias-label-primary-foreground,#fff)}
+.dgs-card{list-style:none;border:1px solid var(--dsw-alias-border-l1,#e5e7eb);border-radius:12px;background:var(--dsw-alias-bg-layer-1,#fff);overflow:hidden}
+.dgs-head{display:flex;width:100%;align-items:baseline;gap:12px;padding:12px 14px;background:none;border:none;cursor:pointer;font:inherit;text-align:left;color:inherit}
+.dgs-title{font-size:14px;font-weight:700;flex:none}
+.dgs-desc{flex:1;min-width:0;font-size:12px;color:var(--dsw-alias-label-secondary,#6b7280);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dgs-body{display:flex;flex-direction:column;gap:10px;padding:0 14px 14px}
+.dgs-row{display:flex;align-items:flex-start;gap:8px;font-size:13px}
+.dgs-label{flex:none;min-width:128px;color:var(--dsw-alias-label-secondary,#6b7280);font-size:12px;padding-top:2px}
+.dgs-value{color:var(--dsw-alias-label-primary,#1f2328);word-break:break-all;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.dgs-badge{display:inline-flex;align-items:center;padding:1px 8px;border-radius:999px;font-size:12px;line-height:18px;white-space:nowrap}
+.dgs-ok{background:rgba(22,163,74,.12);color:#16a34a}
+.dgs-bad{background:rgba(220,38,38,.12);color:#dc2626}
+.dgs-warn{background:rgba(180,83,9,.12);color:#b45309}
+.dgs-neutral{background:rgba(107,114,128,.12);color:#6b7280}
+.dgs-hint{font-size:12px;line-height:1.7;color:var(--dsw-alias-label-secondary,#6b7280);margin:0}
+.dgs-refresh{border:1px solid var(--dsw-alias-border-l2,#d0d5dd);background:var(--dsw-alias-bg-layer-2,#f8fafc);color:var(--dsw-alias-label-primary,#1f2328);border-radius:8px;padding:5px 12px;font:inherit;font-size:12px;font-weight:600;cursor:pointer;align-self:flex-start;display:inline-flex;align-items:center;gap:6px}
+.dgs-refresh:disabled{opacity:.6;cursor:default}
+.dgs-mono{font-variant-numeric:tabular-nums;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 `
 
 function injectStyles() {
@@ -324,8 +377,96 @@ function GuardRestartRow({ t, wide }) {
   return h('span', { ref: anchorRef, style: { display: 'none' } })
 }
 
+function GuardStatusCard({ scope, t }) {
+  // 设置 > 插件 > 插件配置：「守护重启」状态卡片。
+  // 只展示两项信息（systemd 配置状态、fuhuobi 是否已安装），不编辑配置：
+  // 数据来自宿主 /dsh-guard-restart/status（每次请求实时计算，非缓存）。
+  const [open, setOpen] = useState(false)
+  const [status, setStatus] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [failed, setFailed] = useState(false)
+
+  const load = useCallback(async () => {
+    setBusy(true)
+    setFailed(false)
+    try {
+      const res = await fetch('/dsh-guard-restart/status', { cache: 'no-store' })
+      if (!res.ok) throw new Error(String(res.status))
+      setStatus(await res.json())
+    } catch {
+      setFailed(true)
+    } finally {
+      setBusy(false)
+    }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  const s = status || {}
+  const sysd = s.systemd || {}
+  const fuhuobi = s.fuhuobi || {}
+  const setup = s.setup || {}
+
+  const badge = (ok, good, bad) => h('span', { className: 'dgs-badge ' + (ok ? 'dgs-ok' : 'dgs-bad') }, ok ? good : bad)
+  const fuhuobiOk = fuhuobi.installed === true
+  const sysdOk = !!(sysd.present && sysd.active && sysd.enabled)
+
+  const summary = status === null
+    ? (failed ? t('cardFailed') : t('cardLoading'))
+    : (fuhuobiOk ? '✓ ' + t('fuhuobiInstalled') : '✗ ' + t('fuhuobiMissing')) + ' · ' + (sysdOk ? '✓ systemd' : '· systemd')
+
+  return h('li', { className: 'dgs-card' + (open ? ' dgs-open' : '') },
+    h('button', {
+      type: 'button',
+      className: 'dgs-head',
+      'aria-expanded': open,
+      onClick: () => setOpen(!open),
+    },
+      h('span', { className: 'dgs-title' }, t('cardTitle')),
+      h('span', { className: 'dgs-desc' }, summary),
+    ),
+    open ? h('div', { className: 'dgs-body' },
+      h('div', { className: 'dgs-row' },
+        h('span', { className: 'dgs-label' }, t('sysd')),
+        h('span', { className: 'dgs-value' },
+          h('span', { className: 'dgs-mono' }, sysd.unit || '-'),
+          badge(!!sysd.present, t('sysdPresent'), t('sysdAbsent')),
+          badge(!!sysd.active, t('sysdActive'), t('sysdInactive')),
+          badge(!!sysd.enabled, t('sysdEnabled'), t('sysdDisabled')),
+        ),
+      ),
+      h('div', { className: 'dgs-row' },
+        h('span', { className: 'dgs-label' }, t('fuhuobi')),
+        h('span', { className: 'dgs-value' },
+          badge(fuhuobiOk, t('fuhuobiInstalled'), t('fuhuobiMissing')),
+          h('span', { className: 'dgs-badge dgs-neutral' },
+            (fuhuobi.dep ? 'dep ✓' : 'dep ✗') + ' · ' + (fuhuobi.bundle ? 'bundle ✓' : 'bundle ✗'),
+          ),
+        ),
+      ),
+      h('div', { className: 'dgs-row' },
+        h('span', { className: 'dgs-label' }, t('cardTitle')),
+        h('span', { className: 'dgs-value' },
+          setup.fullyReady
+            ? h('span', { className: 'dgs-badge dgs-ok' }, '✓ ' + t('setupReady'))
+            : h('span', { className: 'dgs-badge dgs-warn' }, t('setupMissing')),
+        ),
+      ),
+      h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' } },
+        h('button', {
+          type: 'button',
+          className: 'dgs-refresh',
+          disabled: busy,
+          onClick: load,
+        }, busy ? t('cardLoading') + '…' : '↻ ' + t('cardRefresh')),
+        h('p', { className: 'dgs-hint' }, t('autoNote')),
+      ),
+    ) : null,
+  )
+}
+
 exports.name = 'dsh-guard-restart'
-exports.inject = ['slots', 'locale']
+exports.inject = ['slots', 'locale', 'settingsScope']
 exports.apply = function apply(ctx) {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-guard-restart: dictionaries')
   const t = ctx.locale.bind(NS)
@@ -335,6 +476,24 @@ exports.apply = function apply(ctx) {
     order: 0,
     label: () => '守护重启',
   }, ({ wide }) => h(GuardRestartRow, { t, wide })))
+
+  // 设置 > 插件 > 插件配置：「守护重启」状态卡片（仅展示，不编辑配置）。
+  // namespace 由宿主侧 settings.register('dsh-guard-restart', …) 提供；
+  // 无 settings 服务时静默跳过，不影响侧边栏按钮。
+  let scope = null
+  try { scope = ctx.settingsScope.bind({ namespace: NS }) } catch { /* no settings service */ }
+  if (scope) {
+    ctx.slots.inject('settings.plugin.item', function* () {
+      yield ctx.slots.register({
+        name: 'settings.plugin.item',
+        key: NS,
+        id: NS,
+        order: 50,
+        label: '守护重启',
+        inject: () => ({ scope }),
+      }, (props) => h(GuardStatusCard, Object.assign({ t }, props)))
+    })
+  }
 }
 
 return module.exports; } });
