@@ -9,10 +9,9 @@ var module = { exports: {} }; var exports = module.exports;
  * 变为自动安装。
  *
  * 挂载策略（参考 dsh-fuhuobi 的 guard supervisor，2026-09-11 验证安全）：
- *   - 本插件在 `sidebar.footer.action` 槽只渲染一个不可见锚点（占位、
- *     footerStack 开关需要其父容器引用）；可见圆钮由命令式 DOM 注入「设置」
- *     行容器（settingsArea / sidebar.settings 槽 / aria-haspopup 按钮的父级，
- *     逐级降级定位）。
+ *   - 本插件在 `sidebar.footer.action` 槽挂载 GuardRestartRow（React 生命周期
+ *     载体）；可见圆钮由命令式 DOM 注入「设置」行容器（settingsArea /
+ *     sidebar.settings 槽 / aria-haspopup 按钮的父级，逐级降级定位）。
  *   - 保活 = `MutationObserver(document.body, {childList,subtree})` + head
  *     observer + 800ms 一次 + 3s 心跳；reconcile 严格幂等（条件不满足绝不写
  *     DOM，收敛后完全静默），带 running 重入护栏 —— 不会像 v0.5.0 那样与页面
@@ -27,6 +26,8 @@ var module = { exports: {} }; var exports = module.exports;
  *   无条件写 DOM 且与页面活动自激，导致重启后前端卡在 Loading plugins；v0.5.1
  *   回退 footArea 行按钮。v0.6.0 按用户要求回到设置行内圆钮，改用 fuhuobi 的
  *   幂等 supervisor 模式（已实测 fuhuobi 同机制长期稳定）。
+ *   v0.7.0 移除 footerStack（侧边栏底部按钮各占一行）—— 该功能已迁移至
+ *   dsh-eco-fixes（在「设置 → 插件 → 常用插件自愈」菜单里勾选）。
  */
 
 const React = require('react')
@@ -68,9 +69,7 @@ const zh = {
   setupReady: '守护链完整：boot-guard → run-dsh-web.sh → systemd 单元',
   setupMissing: '守护链有缺件，缺失时会在启动后自动补齐',
   autoNote: '自动检测：每次 DSH 启动后 4 秒检查复活币、6 秒检查守护链（systemd 配置）；本卡片每次打开 / 刷新都会实时读取最新状态。',
-  footerStack: '侧边栏底部按钮各占一行',
-  footerStackOn: '开启（每个插件按钮独占一行）',
-  footerStackOff: '关闭（与其他插件并排）',
+  // v0.7.0: footerStack（侧边栏底部按钮各占一行）已迁移至 dsh-eco-fixes
 }
 
 const en = {
@@ -103,9 +102,6 @@ const en = {
   setupReady: 'Guard chain complete: boot-guard → run-dsh-web.sh → systemd unit',
   setupMissing: 'Guard chain has gaps; they are auto-provisioned after startup',
   autoNote: 'Auto-check: after every DSH start, fuhuobi is checked at 4s and the guard chain (systemd config) at 6s; opening / refreshing this card always reads the latest state.',
-  footerStack: 'Sidebar footer buttons one per row',
-  footerStackOn: 'On (each plugin button gets its own row)',
-  footerStackOff: 'Off (side-by-side with other plugins)',
 }
 
 const CSS = `
@@ -142,8 +138,6 @@ const CSS = `
 .dgs-refresh{border:1px solid var(--dsw-alias-border-l2,#d0d5dd);background:var(--dsw-alias-bg-layer-2,#f8fafc);color:var(--dsw-alias-label-primary,#1f2328);border-radius:8px;padding:5px 12px;font:inherit;font-size:12px;font-weight:600;cursor:pointer;align-self:flex-start;display:inline-flex;align-items:center;gap:6px}
 .dgs-refresh:disabled{opacity:.6;cursor:default}
 .dgs-mono{font-variant-numeric:tabular-nums;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-.dgr-footer-stack{flex-wrap:wrap;row-gap:2px;overflow:visible}
-.dgr-footer-stack>*{flex:0 0 100%;box-sizing:border-box}
 `
 
 function injectStyles() {
@@ -209,7 +203,7 @@ function createNub(onClick, onInstall) {
   return btn
 }
 
-function GuardRestartRow({ t, wide, scope }) {
+function GuardRestartRow({ t, wide }) {
   // ---- 交互状态（React 持有；命令式按钮通过 ref 读取/刷新）----
   const [armed, setArmed] = useState(false)
   const [restarting, setRestarting] = useState(false)
@@ -219,9 +213,7 @@ function GuardRestartRow({ t, wide, scope }) {
   const [ensureBusy, setEnsureBusy] = useState(false)
   const [ensureError, setEnsureError] = useState(false)
   const oldBoot = useRef(null)
-  const anchorRef = useRef(null)
   const btnRef = useRef(null)
-  const stackRef = useRef(false)
 
   const ensureRef = useRef(() => {})
   const restartRef = useRef(() => {})
@@ -284,25 +276,6 @@ function GuardRestartRow({ t, wide, scope }) {
 
   useEffect(() => { ensureRef.current = ensureFuhuobi }, [ensureFuhuobi])
   useEffect(() => { restartRef.current = onRestart }, [onRestart])
-
-  // footerStack：订阅 settingsScope 并应用到 footer 槽容器（anchor 的父级）。
-  useEffect(() => {
-    if (!scope) return
-    let alive = true
-    const apply = () => {
-      if (!alive) return
-      try {
-        const snap = scope.getSnapshot ? scope.getSnapshot() : null
-        const v = snap && snap.value && typeof snap.value.footerStack === 'boolean' ? snap.value.footerStack : false
-        stackRef.current = v
-        const anchor = anchorRef.current
-        if (anchor && anchor.parentElement) anchor.parentElement.classList.toggle('dgr-footer-stack', v)
-      } catch { /* keep current */ }
-    }
-    apply()
-    const unsub = scope.subscribe ? scope.subscribe(apply) : null
-    return () => { alive = false; if (unsub) unsub() }
-  }, [scope])
 
   // paint：按最新状态刷新圆钮外观与位置（幂等；style 不触发 childList）。
   const paint = useCallback((btn, box) => {
@@ -499,35 +472,15 @@ function GuardRestartRow({ t, wide, scope }) {
     }
   }, [restarting, t])
 
-  // React 渲染不可见锚点（占住 footer 槽位；footerStack 开关需要其父容器）。
-  return h('span', { ref: anchorRef, style: { display: 'none' } })
+  // v0.7.0 起不再渲染 footer 锚点（footerStack 已迁移至 dsh-eco-fixes）。
+  return null
 }
 
-function GuardStatusCard({ scope, t }) {
+function GuardStatusCard({ t }) {
   const [open, setOpen] = useState(false)
   const [status, setStatus] = useState(null)
   const [busy, setBusy] = useState(false)
   const [failed, setFailed] = useState(false)
-  const [fsSaving, setFsSaving] = useState(false)
-
-  const subscribe = React.useMemo(
-    () => (scope && scope.subscribe ? scope.subscribe.bind(scope) : (() => () => {})),
-    [scope],
-  )
-  const getSnapshot = React.useMemo(
-    () => (scope && scope.getSnapshot ? scope.getSnapshot.bind(scope) : (() => null)),
-    [scope],
-  )
-  let snap = null
-  try { snap = React.useSyncExternalStore(subscribe, getSnapshot) } catch { snap = null }
-  const cfgReady = !!(snap && snap.status === 'ready')
-  const footerStack = cfgReady && snap.value && typeof snap.value.footerStack === 'boolean' ? snap.value.footerStack : false
-  const toggleFooterStack = async () => {
-    if (!cfgReady || fsSaving || !scope) return
-    setFsSaving(true)
-    try { await scope.set('footerStack', !footerStack) } catch { /* best effort */ }
-    setFsSaving(false)
-  }
 
   const load = useCallback(async () => {
     setBusy(true)
@@ -595,15 +548,6 @@ function GuardStatusCard({ scope, t }) {
             : h('span', { className: 'dgs-badge dgs-warn' }, t('setupMissing')),
         ),
       ),
-      h('div', { className: 'dgs-row' },
-        h('span', { className: 'dgs-label' }, t('footerStack')),
-        h('span', { className: 'dgs-value' },
-          h('label', { style: { display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '13px', cursor: 'pointer' } },
-            h('input', { type: 'checkbox', checked: footerStack, disabled: !cfgReady || fsSaving, onChange: toggleFooterStack, style: { cursor: 'pointer' } }),
-            h('span', null, footerStack ? t('footerStackOn') : t('footerStackOff')),
-          ),
-        ),
-      ),
       h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' } },
         h('button', {
           type: 'button',
@@ -626,16 +570,19 @@ exports.apply = function apply(ctx) {
   const t = ctx.locale.bind(NS)
   let scope = null
   try { scope = ctx.settingsScope.bind({ namespace: NS }) } catch { /* no settings service */ }
+  // 侧边栏 slot:挂载 GuardRestartRow(圆钮 supervisor 的 React 生命周期载体;
+  // v0.7.0 起不再渲染 footer 锚点/不再应用 footerStack class)。
   try {
     ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
       name: 'sidebar.footer.action',
       id: 'dsh-guard-restart',
       order: 0,
       label: () => '守护重启',
-    }, ({ wide }) => h(GuardRestartRow, { t, wide, scope })))
+    }, ({ wide }) => h(GuardRestartRow, { t, wide })))
   } catch { /* slot unavailable: button absent, rest unaffected */ }
 
-  // 设置 > 插件 > 插件配置：「守护重启」状态卡片（含 footerStack 开关）。
+  // 设置 > 插件 > 插件配置：「守护重启」状态卡片（v0.7.0 起仅有
+  // systemd / fuhuobi 状态,不再含 footerStack 开关）。
   if (scope) {
     try {
       ctx.slots.inject('settings.plugin.item', function* () {
@@ -645,7 +592,6 @@ exports.apply = function apply(ctx) {
           id: NS,
           order: 50,
           label: '守护重启',
-          inject: () => ({ scope }),
         }, (props) => h(GuardStatusCard, Object.assign({ t }, props)))
       })
     } catch { /* no settings card */ }

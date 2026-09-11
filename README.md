@@ -6,8 +6,8 @@ DSH 插件：**守护重启 + 复活币自愈 + 自动设置守护链**。
 - 在左侧边栏 **「设置」行内**放一个「守护重启」小圆钮（与设置按钮同一行，参考 dsh-fuhuobi 的注入方式；不占用脚区独立行，不与其他插件按钮并排冲突）。
 - 在 **设置 → 插件** 界面新增「守护重启」菜单（卡片）：展示 **当前 systemd 配置状态** 与 **dsh-fuhuobi 是否已安装**（含守护链完整性），每次打开/刷新实时读取 `/status`。
 - 重启走 **dsh-fuhuobi 的守护进程**：`systemctl restart dsh-web.service` → run-dsh-web.sh（清端口）→ boot-guard.sh（两阶段健康检查 → 失败自动回滚重试 → 成功自动铸复活币）。
-- **侧边栏底部按钮各占一行**（`footerStack`，**实验性，默认关闭**，可在 设置→插件「守护重启」卡片里开启）：尝试让 `sidebar.footer.action` 槽容器内的插件按钮各自独占一行，规避不同插件（如 `dsh-cost-meter` 徽章与 `dsh-auto-memory` 按钮）并排显示。⚠️ v0.4.0 曾默认开启并把容器改为纵向布局，实测会把位于第二行的 auto-memory 按钮**挤出可视区**（移除该 class 后按钮即恢复），因此改为默认关闭 + `flex-wrap` 温和实现。
-- 启动后 4s 自动检测 fuhuobi、6s 自动自检守护链，**缺什么自动补什么**（boot-guard.sh / run-dsh-web.sh / systemd 单元 / enable；无 systemd 时回退 cron `@reboot`）——对齐 `dsh-daemon` 的 `install` 一键设置思路，幂等且不打断当前会话。
+- 启动后 4s 自动检测 fuhuobi、6s 自动自检守护链，**缺什么自动补什么**（boot-guard.sh / run-dsh-web.sh / systemd 单元 / enable；无 systemd 时回退 cron `@reboot`）——对齐 `dsh-daemon` 的 `install` 一键设置思路，幂等且不打断当前会话。 
+- **v0.7.0 起不再提供「侧边栏底部按钮各占一行」（`footerStack`）**：该功能已迁移到 **dsh-eco-fixes**，在 设置→插件→插件配置「常用插件自愈」菜单里勾选（默认关闭）。
 
 ## 安装
 
@@ -23,7 +23,7 @@ dsh plugin --profile web add /root/deepseek/project/dsh-guard-restart
 
 ## 侧边栏位置说明 · 按钮在「设置」行内（v0.6.0 起）
 
-- 本插件在 `sidebar.footer.action` 槽只渲染**不可见锚点**（占位 + footerStack 开关需要其父容器引用）。
+- 本插件在 `sidebar.footer.action` 槽挂载 GuardRestartRow（React 生命周期载体，渲染为空）。
 - **可见入口**：命令式注入 **`settingsArea`（设置行）内**的绝对定位小圆钮（28px，↻），与**设置按钮同一行**（参考 dsh-fuhuobi）；**避让**同行 `[data-nio-rst]`（硬性重启钮）与 `[data-fuhuobi-rst]`（dsh-fuhuobi 存币钮）。
 - **保活**：`MutationObserver(document.body)` + head observer + 800ms 一次 + 3s 心跳（参考 dsh-fuhuobi 的 guarded-restart supervisor）；reconcile **严格幂等**（条件不满足不写 DOM，收敛即静默），绝不修改其它插件 DOM。
 - 交互：缺 dsh-fuhuobi 时点按 = 自动安装；就绪后第一次点按进入确认态（红色 ✓，5 秒自动解除），再点一次才守护重启；重启期间全屏遮罩 + 轮询 `/ping` 自动刷新。
@@ -68,16 +68,19 @@ dsh plugin --profile web add /root/deepseek/project/dsh-guard-restart
 
 ## 设置 → 插件：守护重启菜单
 
-宿主在启动时注册 `settings` namespace `dsh-guard-restart`（字段 `footerStack`，
-机制同 dsh-fuhuobi），因此在 **设置 → 插件 → 插件配置** 列表中出现「守护重启」卡片。
-卡片数据来自 `GET /dsh-guard-restart/status`（实时计算，非缓存）+ `footerStack` 开关（可编辑）：
+宿主在启动时注册 `settings` namespace `dsh-guard-restart`（v0.7.0 起为空 schema，
+仅用于让卡片出现在列表；机制同 dsh-fuhuobi），因此在 **设置 → 插件 → 插件配置**
+列表中出现「守护重启」状态卡片。
+卡片数据来自 `GET /dsh-guard-restart/status`（实时计算，非缓存）：
 
 | 菜单内信息 | 数据来源 | 展示 |
 | --- | --- | --- |
 | systemd 配置状态 | `/status → systemd` | 单元名 + 已配置/未配置 · 运行中/未运行 · 开机自启/未设自启 |
 | fuhuobi 是否已安装 | `/status → fuhuobi` | 已安装/未安装 + `dep`/`bundle` 徽章 |
 | （附加）守护链完整性 | `/status → setup.fullyReady` | 完整 ✓ / 有缺件（缺失自动补齐） |
-| **侧边栏按钮各占一行**（开关） | settings `footerStack` | **默认关闭**（实验性）；开启后 `sidebar.footer.action` 槽容器内各插件按钮换行独占一行 |
+
+> ⚠️ v0.7.0：「侧边栏按钮各占一行」（footerStack 开关）已迁移至
+> **dsh-eco-fixes**（设置 → 插件 → 插件配置 →「常用插件自愈」菜单勾选）。
 
 卡片每次打开自动拉取一次，也可点「↻ 刷新」手动拉取（对应"自动检测"的可视化）。
 
