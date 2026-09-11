@@ -21,7 +21,14 @@ dsh plugin --profile web add /root/deepseek/project/dsh-guard-restart
 
 重启 DSH（`systemctl restart dsh-web`）后生效。
 
-## 侧边栏位置说明（v0.5.0 起）· 按钮在「设置」行内
+## 侧边栏位置说明 · 按钮在「设置」上方独立一行（v0.5.1 起回退）
+
+> ⚠️ v0.5.0 曾把可见按钮改为注入设置行（settingsArea 绝对定位圆钮），并用全页面
+> `MutationObserver(document.body)` 保活；实测导致 **DSH 重启后前端一直卡在
+> "Loading plugins…"**（服务端正常，前端 client 树加载卡死，观察器与页面其余
+> DOM 活动自激占死主线程）。v0.5.1 已回退为 0.4.1 的 footArea 实现（局部观察，
+> 按钮在「设置」上方独立一行，用户实测正常）。
+
 
 DSH 侧边栏底部（foot）是纵向布局：`sidebar.footer.action`（操作行，cost-meter 徽章与
 auto-memory 按钮所在）→ `sidebar.settings`（设置行）。本插件先注册进

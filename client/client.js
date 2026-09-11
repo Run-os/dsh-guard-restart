@@ -6,6 +6,19 @@ var module = { exports: {} }; var exports = module.exports;
  * dsh-guard-restart client: a guarded-restart button in the left sidebar,
  * displayed on its own row directly ABOVE the Settings row.
  *
+ * v0.5.1（2026-09-11 故障回退）：
+ *   v0.5.0 把按钮改为命令式注入「设置」行（settingsArea 绝对定位圆钮），并
+ *   用 `MutationObserver(document.body, { childList, subtree })` + 3s 心跳来
+ *   保活。实测（多轮冷启动）服务端一切正常，但**前端 splash 一直卡在
+ *   "Loading plugins…"**：全页面的 DOM 变更都会触发 reconcile，而 reconcile
+ *   内部又 remove/appendChild/改 style，与页面其它插件的 DOM 活动（聊天、
+ *   动画等）形成自激，主线程被占死，前端 `loader.await()` 永不完成。
+ *   经 probe（electron 实测）确认为 0.5.0 引入（0.4.x 同一 inject 与 apply
+ *   结构、仅观察 footArea 局部 DOM 时前端正常）。
+ *   修复：回退为 0.4.1 的 footArea 实现（局部 MutationObserver，只重排自身
+ *   按钮行），按钮仍在「设置」上方独立一行（用户实测正常）。
+ */
+ *
  * Mounting strategy (imperative portal):
  *   - The slot renderer mounts this component inside the `sidebar.footer.action`
  *     container. We render only an invisible anchor there (React-owned), then
@@ -144,14 +157,6 @@ const CSS = `
    auto-memory 按钮挤出可视区；这里改用 flex-wrap + 每子项整行宽。 */
 .dgr-footer-stack{flex-wrap:wrap;row-gap:2px;overflow:visible}
 .dgr-footer-stack>*{flex:0 0 100%;box-sizing:border-box}
-/* 设置行内守护重启圆钮（v0.5.0 起挂进 settingsArea，与设置按钮同一行） */
-.dgr-nub{position:absolute;top:50%;transform:translateY(-50%);width:28px;height:28px;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;border:none;border-radius:50%;padding:0;background:transparent;color:var(--dsw-alias-label-secondary,#6b7280);font-size:15px;line-height:1;cursor:pointer;z-index:10;transition:color .15s ease,background .15s ease}
-.dgr-nub:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary,#1f2328)}
-.dgr-nub-armed{background:var(--dsw-alias-state-error-primary,#dc2626);color:#fff}
-.dgr-nub-armed:hover{background:#b91c1c;color:#fff}
-.dgr-nub-warn{color:var(--dsw-alias-state-warn-primary,#b45309)}
-.dgr-nub-warn:hover{background:rgba(180,83,9,.12);color:#b45309}
-.dgr-nub-busy{opacity:.6;cursor:wait}
 `
 
 function injectStyles() {
@@ -178,17 +183,11 @@ function GuardRestartRow({ t, wide, scope }) {
   // 服务时保持默认关闭。
   const stackRef = useRef(false)
 
-  // 设置行内圆钮（参考 dsh-fuhuobi：挂进 settingsArea，绝不占用脚区独立行）
-  const btnRef = useRef(null)
-  const boxRef = useRef(null)
-  const paintRef = useRef(() => {})
-  const fuhuobiOkRef = useRef(null)
-  useEffect(() => { fuhuobiOkRef.current = fuhuobiOk }, [fuhuobiOk])
-
   // Imperative node + anchor: the anchor is React-owned (inside the slot
-  // container where the shell expects us); the real button lives in the
-  // settings row (see supervisor below).
+  // container where the shell expects us); the real node is not.
   const anchorRef = useRef(null)
+  const nodeRef = useRef(null)
+  const mountedRef = useRef(false)
 
   // Keep latest handlers reachable from imperative DOM nodes.
   const ensureRef = useRef(() => {})
@@ -266,106 +265,89 @@ function GuardRestartRow({ t, wide, scope }) {
     return () => { alive = false; if (unsub) unsub() }
   }, [scope])
 
-  // ---- 设置行内圆钮（参考 dsh-fuhuobi：挂进 settingsArea，绝不占用脚区独立行）----
-  // paint：按当前状态刷新按钮外观与位置（绝对定位在设置行右端，避让
-  // [data-nio-rst] 硬性重启钮与 [data-fuhuobi-rst] 存币钮）。
-  const paint = () => {
-    const btn = btnRef.current
-    const box = boxRef.current
-    if (!btn) return
-    try {
-      if (fuhuobiOk === false) {
-        btn.className = 'dgr-nub dgr-nub-warn' + (ensureBusy ? ' dgr-nub-busy' : '')
-        btn.textContent = '✚'
-        btn.title = ensureBusy ? t('installing') : (ensureError ? t('failedInstall') : t('missing'))
-        btn.disabled = ensureBusy
-      } else if (armed) {
-        btn.className = 'dgr-nub dgr-nub-armed'
-        btn.textContent = '✓'
-        btn.title = t('armed')
-        btn.disabled = false
-      } else {
-        btn.className = 'dgr-nub'
-        btn.textContent = '↻'
-        btn.title = t('hint')
-        btn.disabled = false
-      }
-      const nio = box ? box.querySelector('[data-nio-rst]') : null
-      const fhb = box ? box.querySelector('[data-fuhuobi-rst]') : null
-      btn.style.right = (8 + (nio ? 34 : 0) + (fhb ? 34 : 0)) + 'px'
-      const collapsed = box ? box.closest('[class*="collapsed"]') !== null : false
-      btn.style.display = collapsed ? 'none' : 'inline-flex'
-    } catch { /* 兜底：本按钮问题绝不影响页面 */ }
-  }
-  useEffect(() => { paintRef.current = paint })
-  useEffect(() => { paint() }, [t, armed, fuhuobiOk, ensureBusy, ensureError])
-
-  // supervisor：按钮挂进设置行 + 存活（MutationObserver + 心跳 + 清理）。
+  // Create the visible node and seat it above the footer-actions row.
   useEffect(() => {
     injectStyles()
-    let disposed = false
-    let running = false
+    const anchor = anchorRef.current
+    if (!anchor) return
+    mountedRef.current = true
 
-    const isBox = (el) => {
-      try { return !!el && el instanceof Element && el.getBoundingClientRect && getComputedStyle(el).display !== 'contents' } catch { return false }
+    const node = document.createElement('div')
+    node.className = 'dgr-seat'
+    nodeRef.current = node
+
+    const clsOf = (el) => {
+      const c = el.className
+      return (typeof c === 'string' ? c : (c && c.baseVal)) || ''
     }
-    // 4 级降级定位"设置"行容器（与 dsh-fuhuobi 同一套逻辑）。
-    const resolveBox = () => {
-      const byClass = document.querySelector('[class*="settingsArea"]')
-      if (isBox(byClass)) return byClass
-      const slot = document.querySelector('[data-slot="sidebar.settings"]')
-      if (slot) {
-        if (slot.parentElement && isBox(slot.parentElement)) return slot.parentElement
-        if (isBox(slot)) return slot
+    const seat = () => {
+      if (!mountedRef.current) return
+      // footerStack：让 anchor 所在槽容器（sidebar.footer.action）竖排，
+      // 各插件的按钮/徽章各自独占一行；开关在设置-插件卡片里。
+      if (anchor.parentElement) {
+        anchor.parentElement.classList.toggle('dgr-footer-stack', !!stackRef.current)
       }
-      return null
+      // 槽渲染器可能包裹一层，往祖先链上找到真正的脚区（class 含 footArea）。
+      let foot = anchor.parentElement
+      while (foot && !clsOf(foot).includes('footArea')) {
+        foot = foot.parentElement
+      }
+      if (!foot) return
+      // 目标行序（脚区是列布局）：[本行] → [cost-meter 等 footer-actions 行] → [设置行]
+      // 按钮放在脚区最前 = cost-meter 行的上方。
+      if (foot.firstElementChild !== node) {
+        foot.insertBefore(node, foot.firstElementChild)
+      }
     }
-
-    const reconcile = () => {
-      if (disposed || running) return
-      running = true
-      try {
-        // 热重放残留：同一时刻只保留一枚按钮
-        const all = Array.from(document.querySelectorAll('[data-dgr-nub]'))
-        for (const b of all) if (b !== btnRef.current) { try { b.remove() } catch {} }
-        const box = resolveBox()
-        if (!box) { boxRef.current = null; return }
-        boxRef.current = box
-        try { if (getComputedStyle(box).position === 'static') box.style.position = 'relative' } catch {}
-        let btn = btnRef.current
-        if (!btn || !btn.isConnected) {
-          btn = document.createElement('button')
-          btn.type = 'button'
-          btn.className = 'dgr-nub'
-          btn.setAttribute('data-dgr-nub', '1')
-          btn.onclick = () => {
-            // 复活币缺失时点按 = 安装；就绪后 = 两次确认的守护重启
-            if (fuhuobiOkRef.current === false) { ensureRef.current(); return }
-            restartRef.current()
-          }
-          btnRef.current = btn
-          box.appendChild(btn)
-        } else if (!box.contains(btn)) {
-          box.appendChild(btn) // 领养移动：监听器随元素保留
-        }
-        paintRef.current()
-      } catch { /* 本按钮崩溃绝不致黑屏 */ } finally { running = false }
-    }
-
-    const mo = new MutationObserver(reconcile)
-    try { mo.observe(document.body, { childList: true, subtree: true }) } catch {}
-    reconcile()
-    const hb = setInterval(reconcile, 3000)
+    seat()
+    const observer = new MutationObserver(seat)
+    let foot = anchor.parentElement
+    while (foot && !clsOf(foot).includes('footArea')) foot = foot.parentElement
+    if (foot) observer.observe(foot, { childList: true })
 
     return () => {
-      disposed = true
-      clearInterval(hb)
-      try { mo.disconnect() } catch {}
-      const btn = btnRef.current
-      if (btn && btn.isConnected && btn.parentElement) { try { btn.parentElement.removeChild(btn) } catch {} }
-      btnRef.current = null
+      mountedRef.current = false
+      observer.disconnect()
+      if (node.parentElement) node.parentElement.removeChild(node)
+      nodeRef.current = null
     }
   }, [])
+
+  // Rebuild the imperative node whenever state/locale changes.
+  useEffect(() => {
+    const node = nodeRef.current
+    if (!node) return
+    while (node.firstChild) node.removeChild(node.firstChild)
+    if (!wide) {
+      node.className = 'dgr-seat-rail'
+    } else {
+      node.className = 'dgr-seat'
+    }
+    if (!wide) {
+      const btn = document.createElement('button')
+      btn.className = 'dgr-btn-rail'
+      btn.title = t('hint')
+      btn.textContent = armed ? '✓' : '↻'
+      btn.onclick = () => restartRef.current()
+      node.appendChild(btn)
+      return
+    }
+    const btn = document.createElement('button')
+    btn.className = 'dgr-btn' + (armed ? ' armed' : '')
+    btn.title = t('hint')
+    btn.textContent = armed ? t('armed') : ('↻ ' + t('btn'))
+    btn.onclick = () => restartRef.current()
+    node.appendChild(btn)
+    if (fuhuobiOk === false) {
+      const mini = document.createElement('button')
+      mini.className = 'dgr-mini'
+      mini.disabled = ensureBusy
+      mini.title = t('missing')
+      mini.textContent = ensureBusy ? t('installing') : (ensureError ? t('failedInstall') : t('install'))
+      mini.onclick = () => ensureRef.current()
+      node.appendChild(mini)
+    }
+  }, [t, wide, armed, fuhuobiOk, ensureBusy, ensureError])
 
   // Initial status probe.
   useEffect(() => { loadStatus() }, [loadStatus])
