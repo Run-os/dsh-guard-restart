@@ -345,8 +345,9 @@ function GuardRestartRow({ t, wide, scope }) {
     let heartbeat = null
 
     const reconcile = () => {
-      if (disposed || running) return
-      running = true
+      // 防重入由 schedule() 统一管理（running 锁）；此处绝不能再检查
+      // running——否则 schedule 置锁后再调 reconcile 会被自己的锁挡回，
+      // reconcile 永远空转（v0.6.0 初版 bug：按钮因此从未被创建）。
       try {
         const all = Array.from(document.querySelectorAll('[data-dgr-nub]'))
         if (all.length > 1) {
@@ -378,7 +379,7 @@ function GuardRestartRow({ t, wide, scope }) {
           try { box.style.position = 'relative' } catch {}
         }
         paint(btn, box)
-      } catch { /* 本按钮崩溃绝不致黑屏 */ } finally { running = false }
+      } catch { /* 本按钮崩溃绝不致黑屏 */ }
     }
 
     const schedule = () => {
