@@ -30,6 +30,10 @@ var module = { exports: {} }; var exports = module.exports;
  *   dsh-eco-fixes（在「设置 → 插件 → 常用插件自愈」菜单里勾选）。
  *   v0.7.1 确认交互改为「点击圆钮 → 锚定 Popover（确定/取消）」：不再需要
  *   点两下确认（armed 红色✓态），防误触且意图更直观。
+ *   v0.7.2 设置-插件状态卡片样式对齐 dsh-fuhuobi `.gdb-card`（border-l2 /
+ *   bg-layer-3 / radius 12 / hover 描边 / open 态反馈），并把 injectStyles()
+ *   提升到 apply() 入口无条件注入（原来只在组件 useEffect 里调用，卡片样式
+ *   依赖侧边栏槽挂载；参考 dsh-eco-fixes STYLE-DIFF-REPORT）。
  */
 
 const React = require('react')
@@ -139,7 +143,9 @@ const CSS = `
 .dgr-pop-cancel:hover{background:var(--dsw-alias-interactive-bg-hover)}
 .dgr-pop-ok{background:var(--dsw-alias-state-error-primary,#dc2626);color:#fff}
 .dgr-pop-ok:hover{background:#b91c1c}
-.dgs-card{list-style:none;border:1px solid var(--dsw-alias-border-l1,#e5e7eb);border-radius:12px;background:var(--dsw-alias-bg-layer-1,#fff);overflow:hidden}
+.dgs-card{list-style:none;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-3);transition:border-color .16s,background .16s;overflow:hidden}
+.dgs-card:hover{border-color:var(--dsw-alias-label-dimmed)}
+.dgs-card.dgs-open{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-label-dimmed)}
 .dgs-head{display:flex;width:100%;align-items:baseline;gap:12px;padding:12px 14px;background:none;border:none;cursor:pointer;font:inherit;text-align:left;color:inherit}
 .dgs-title{font-size:14px;font-weight:700;flex:none}
 .dgs-desc{flex:1;min-width:0;font-size:12px;color:var(--dsw-alias-label-secondary,#6b7280);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -647,6 +653,10 @@ function GuardStatusCard({ t }) {
 exports.name = 'dsh-guard-restart'
 exports.inject = ['slots', 'locale', 'settingsScope']
 exports.apply = function apply(ctx) {
+  // 无条件注入全部样式（卡片边框/底色、Popover、遮罩等）：与卡片渲染解耦，
+  // 插件一启动即就绪——对齐 dsh-fuhuobi 的 installStyles 语义，避免
+  // 只依赖组件 useEffect 调用导致样式表缺失、卡片退化为无边框裸文本。
+  injectStyles()
   try {
     ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-guard-restart: dictionaries')
   } catch { /* locale unavailable: degrade quietly */ }
