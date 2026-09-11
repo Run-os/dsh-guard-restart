@@ -118,8 +118,8 @@ const CSS = `
 .dgr-elapsed{font-size:12px;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-secondary,#6b7280)}
 .dgr-stuck{font-size:12px;color:var(--dsw-alias-state-warn-primary,#b45309);line-height:1.6;margin:0}
 .dgr-refresh{border:none;border-radius:8px;padding:8px 18px;font:inherit;font-size:13px;font-weight:600;cursor:pointer;background:var(--dsw-alias-button-primary-fill,#4f6ef7);color:var(--dsw-alias-label-primary-foreground,#fff)}
-.dgr-nub{color:var(--dsw-alias-label-secondary,#6b7280);font-size:15px;line-height:1;cursor:pointer}
-.dgr-nub:hover{color:var(--dsw-alias-label-primary,#1f2328)}
+.dgr-nub{color:var(--dsw-alias-label-secondary,#6b7280);font-size:15px;line-height:1;cursor:pointer;background:transparent}
+.dgr-nub:hover{color:var(--dsw-alias-label-primary,#1f2328);background:var(--dsw-alias-interactive-bg-hover)}
 .dgr-nub-armed{color:var(--dsw-alias-state-error-primary,#dc2626);background:rgba(220,38,38,.14)}
 .dgr-nub-armed:hover{color:#b91c1c}
 .dgr-nub-warn{color:var(--dsw-alias-state-warn-primary,#b45309)}
@@ -198,6 +198,7 @@ function createNub(onClick, onInstall) {
   btn.style.setProperty('justify-content', 'center', 'important')
   btn.style.setProperty('border', 'none', 'important')
   btn.style.setProperty('border-radius', '50%', 'important')
+  btn.style.setProperty('background', 'transparent', 'important')
   btn.style.setProperty('padding', '0', 'important')
   btn.style.setProperty('z-index', '10', 'important')
   btn.addEventListener('click', (e) => {
