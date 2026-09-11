@@ -26,7 +26,9 @@ dsh plugin --profile web add /root/deepseek/project/dsh-guard-restart
 - 本插件在 `sidebar.footer.action` 槽挂载 GuardRestartRow（React 生命周期载体，渲染为空）。
 - **可见入口**：命令式注入 **`settingsArea`（设置行）内**的绝对定位小圆钮（28px，↻），与**设置按钮同一行**（参考 dsh-fuhuobi）；**避让**同行 `[data-nio-rst]`（硬性重启钮）与 `[data-fuhuobi-rst]`（dsh-fuhuobi 存币钮）。
 - **保活**：`MutationObserver(document.body)` + head observer + 800ms 一次 + 3s 心跳（参考 dsh-fuhuobi 的 guarded-restart supervisor）；reconcile **严格幂等**（条件不满足不写 DOM，收敛即静默），绝不修改其它插件 DOM。
-- 交互：缺 dsh-fuhuobi 时点按 = 自动安装；就绪后第一次点按进入确认态（红色 ✓，5 秒自动解除），再点一次才守护重启；重启期间全屏遮罩 + 轮询 `/ping` 自动刷新。
+- 交互：缺 dsh-fuhuobi 时点按 = 自动安装；就绪后点按弹出一个锚定圆钮的确认
+  **Popover**（询问是否重启，两个按钮：**确定 / 取消**），点「确定」才守护重启，
+  点「取消」/ 点击外部 / Esc 关闭；重启期间全屏遮罩 + 轮询 `/ping` 自动刷新。
 
 > ⚠️ 历史教训（v0.5.0 / v0.5.1）：v0.5.0 用同一入口但 reconcile 每次无条件写 DOM 并
 > 与页面其余 DOM 活动自激，实测导致 DSH 重启后端前端 splash 一直卡在
@@ -101,7 +103,7 @@ dsh plugin --profile web add /root/deepseek/project/dsh-guard-restart
 
 ## 守护重启如何工作
 
-1. 浏览器点两次按钮确认 → `POST /restart`，宿主 spawn 一个 **detached** 的
+1. 浏览器点圆钮，确认 Popover 里点「确定」→ `POST /restart`，宿主 spawn 一个 **detached** 的
    `lib/guard-restart-helper.mjs`（独立于本进程生命周期）。
 2. helper 等 1.6s（让 200 响应先送达浏览器）。
 3. 走 systemd 时：在**独立临时 scope**（`systemd-run --scope`）里执行

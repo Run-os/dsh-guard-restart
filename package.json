@@ -1,6 +1,6 @@
 {
   "name": "dsh-guard-restart",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "DSH 守护重启：检测并自动安装 dsh-fuhuobi（复活币），在左侧边栏「设置」行内提供一键重启圆钮（与设置按钮同一行，参考 dsh-fuhuobi），重启走 dsh-fuhuobi 的守护启动（boot-guard：健康检查→失败自动回滚）。Guard-restart for DeepSeek Harness: ensures dsh-fuhuobi is installed and adds a restart button inside the sidebar Settings row, restarting through the fuhuobi guarded boot.",
   "type": "module",
   "main": "lib/index.js",

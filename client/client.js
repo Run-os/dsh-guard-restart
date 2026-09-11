@@ -18,7 +18,7 @@ var module = { exports: {} }; var exports = module.exports;
  *     其它 DOM 活动自激占死主线程。
  *   - 按钮几何全部内联 !important，不依赖样式表存活；绝不修改其它插件 DOM。
  *
- * 交互流：第一次点击进入确认态（红色✓，5 秒自动解除）；第二次点击 POST
+ * 交互流：点击圆钮弹出一个确认 Popover（确定/取消）；点「确定」才 POST
  * /dsh-guard-restart/restart，全屏遮罩 + 轮询 /ping 直到 boot id 变化后刷新。
  *
  * 版本历史：
@@ -28,6 +28,8 @@ var module = { exports: {} }; var exports = module.exports;
  *   幂等 supervisor 模式（已实测 fuhuobi 同机制长期稳定）。
  *   v0.7.0 移除 footerStack（侧边栏底部按钮各占一行）—— 该功能已迁移至
  *   dsh-eco-fixes（在「设置 → 插件 → 常用插件自愈」菜单里勾选）。
+ *   v0.7.1 确认交互改为「点击圆钮 → 锚定 Popover（确定/取消）」：不再需要
+ *   点两下确认（armed 红色✓态），防误触且意图更直观。
  */
 
 const React = require('react')
@@ -37,14 +39,17 @@ const { useState, useEffect, useRef, useCallback } = React
 const NS = 'dsh-guard-restart'
 const POLL_MS = 1000
 const STUCK_AFTER_MS = 60000
-const BTN_VERSION = '0.6.0'
+const BTN_VERSION = '0.7.1'
 
 const zh = {
   btn: '守护重启',
-  armed: '再点一次确认',
   installing: '安装中…',
   install: '装复活币',
   failedInstall: '安装失败',
+  askTitle: '确认守护重启？',
+  askBody: '将重启 DeepSeek Harness，当前会话会短暂中断；启动失败会自动回滚，完成后页面自动刷新。',
+  ok: '确定',
+  cancel: '取消',
   restarting: '正在守护重启 DeepSeek Harness',
   pleaseWait: '将经 dsh-fuhuobi 守护启动重启；失败会自动回滚，完成后页面自动刷新',
   stuck: '重启耗时有点久，服务可能未正常启动。点下方按钮手动刷新，或检查服务日志。',
@@ -74,10 +79,13 @@ const zh = {
 
 const en = {
   btn: 'Guard restart',
-  armed: 'Click again to confirm',
   installing: 'Installing…',
   install: 'Install fuhuobi',
   failedInstall: 'Install failed',
+  askTitle: 'Restart DeepSeek Harness?',
+  askBody: 'The current session will briefly interrupt; it auto-rolls back on failure and the page reloads once it is back.',
+  ok: 'Restart',
+  cancel: 'Cancel',
   restarting: 'Guard-restarting DeepSeek Harness',
   pleaseWait: 'Restarting via dsh-fuhuobi guarded boot; auto-rollback on failure. The page reloads when it is back.',
   stuck: 'This is taking a while; the service may not have come back. Refresh manually or check the service logs.',
@@ -116,11 +124,21 @@ const CSS = `
 .dgr-refresh{border:none;border-radius:8px;padding:8px 18px;font:inherit;font-size:13px;font-weight:600;cursor:pointer;background:var(--dsw-alias-button-primary-fill,#4f6ef7);color:var(--dsw-alias-label-primary-foreground,#fff)}
 .dgr-nub{color:var(--dsw-alias-label-secondary,#6b7280);font-size:15px;line-height:1;cursor:pointer;background:transparent}
 .dgr-nub:hover{color:var(--dsw-alias-label-primary,#1f2328);background:var(--dsw-alias-interactive-bg-hover)}
-.dgr-nub-armed{color:var(--dsw-alias-state-error-primary,#dc2626);background:rgba(220,38,38,.14)}
-.dgr-nub-armed:hover{color:#b91c1c}
 .dgr-nub-warn{color:var(--dsw-alias-state-warn-primary,#b45309)}
 .dgr-nub-warn:hover{color:#92400e}
 .dgr-nub-busy{opacity:.6;cursor:wait}
+.dgr-pop{position:fixed;z-index:9100;min-width:220px;max-width:min(300px,86vw);box-sizing:border-box;background:var(--dsw-alias-bg-layer-1,#fff);border:1px solid var(--dsw-alias-border-l1,#e5e7eb);border-radius:12px;box-shadow:0 14px 44px rgba(0,0,0,.22);padding:14px 16px;display:flex;flex-direction:column;gap:10px;text-align:left;color:var(--dsw-alias-label-primary,#1f2328)}
+.dgr-pop::before{content:'';position:absolute;width:10px;height:10px;box-sizing:border-box;background:var(--dsw-alias-bg-layer-1,#fff);border-left:1px solid var(--dsw-alias-border-l1,#e5e7eb);border-top:1px solid var(--dsw-alias-border-l1,#e5e7eb);transform:rotate(45deg)}
+.dgr-pop[data-dgr-pop-arrow="top"]::before{top:-6px;right:14px}
+.dgr-pop[data-dgr-pop-arrow="bottom"]::before{bottom:-6px;right:14px}
+.dgr-pop-title{font-size:14px;font-weight:700;margin:0}
+.dgr-pop-body{font-size:12px;line-height:1.6;color:var(--dsw-alias-label-secondary,#6b7280);margin:0}
+.dgr-pop-actions{display:flex;gap:8px;justify-content:flex-end}
+.dgr-pop-btn{border:none;border-radius:8px;padding:6px 14px;font:inherit;font-size:13px;font-weight:600;cursor:pointer}
+.dgr-pop-cancel{background:var(--dsw-alias-bg-layer-2,#f3f4f6);color:var(--dsw-alias-label-primary,#1f2328);border:1px solid var(--dsw-alias-border-l2,#d0d5dd)}
+.dgr-pop-cancel:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.dgr-pop-ok{background:var(--dsw-alias-state-error-primary,#dc2626);color:#fff}
+.dgr-pop-ok:hover{background:#b91c1c}
 .dgs-card{list-style:none;border:1px solid var(--dsw-alias-border-l1,#e5e7eb);border-radius:12px;background:var(--dsw-alias-bg-layer-1,#fff);overflow:hidden}
 .dgs-head{display:flex;width:100%;align-items:baseline;gap:12px;padding:12px 14px;background:none;border:none;cursor:pointer;font:inherit;text-align:left;color:inherit}
 .dgs-title{font-size:14px;font-weight:700;flex:none}
@@ -205,7 +223,7 @@ function createNub(onClick, onInstall) {
 
 function GuardRestartRow({ t, wide }) {
   // ---- 交互状态（React 持有；命令式按钮通过 ref 读取/刷新）----
-  const [armed, setArmed] = useState(false)
+  const [ask, setAsk] = useState(false)
   const [restarting, setRestarting] = useState(false)
   const [stuck, setStuck] = useState(false)
   const [elapsed, setElapsed] = useState(0)
@@ -217,10 +235,10 @@ function GuardRestartRow({ t, wide }) {
 
   const ensureRef = useRef(() => {})
   const restartRef = useRef(() => {})
+  const confirmRef = useRef(() => {})
   // 最新状态供命令式按钮刷新（supervisor 的 paint 从这儿取）。
-  const stateRef = useRef({ fuhuobiOk: null, armed: false, ensureBusy: false, ensureError: false, t })
+  const stateRef = useRef({ fuhuobiOk: null, ensureBusy: false, ensureError: false, t })
   stateRef.current.fuhuobiOk = fuhuobiOk
-  stateRef.current.armed = armed
   stateRef.current.ensureBusy = ensureBusy
   stateRef.current.ensureError = ensureError
   stateRef.current.t = t
@@ -254,10 +272,16 @@ function GuardRestartRow({ t, wide }) {
     }
   }, [ensureBusy, loadStatus])
 
-  const onRestart = useCallback(async () => {
+  // 点击圆钮 = 弹出确认 Popover（不直接重启）。
+  const onRestart = useCallback(() => {
     if (restarting) return
-    if (!armed) { setArmed(true); return }
-    setArmed(false)
+    setAsk(true)
+  }, [restarting])
+
+  // Popover 里点「确定」才真正执行守护重启。
+  const confirmRestart = useCallback(async () => {
+    if (restarting) return
+    setAsk(false)
     setStuck(false)
     setElapsed(0)
     try {
@@ -272,10 +296,11 @@ function GuardRestartRow({ t, wide }) {
         body: '{}',
       })
     } catch { /* response may be lost when the host dies right after */ }
-  }, [armed, restarting])
+  }, [restarting])
 
   useEffect(() => { ensureRef.current = ensureFuhuobi }, [ensureFuhuobi])
   useEffect(() => { restartRef.current = onRestart }, [onRestart])
+  useEffect(() => { confirmRef.current = confirmRestart }, [confirmRestart])
 
   // paint：按最新状态刷新圆钮外观与位置（幂等；style 不触发 childList）。
   const paint = useCallback((btn, box) => {
@@ -290,10 +315,10 @@ function GuardRestartRow({ t, wide }) {
         btn.title = s.ensureBusy ? (s.t('installing') || 'installing') : (s.ensureError ? (s.t('failedInstall') || 'failed') : (s.t('missing') || 'missing'))
         btn.disabled = !!s.ensureBusy
       } else {
-        btn.dataset.dgrMode = s.armed ? 'confirm' : 'restart'
-        btn.className = 'dgr-nub' + (s.armed ? ' dgr-nub-armed' : '')
-        btn.textContent = s.armed ? '✓' : '↻'
-        btn.title = s.armed ? (s.t('armed') || 'confirm') : (s.t('hint') || '')
+        btn.dataset.dgrMode = 'restart'
+        btn.className = 'dgr-nub'
+        btn.textContent = '↻'
+        btn.title = s.t('hint') || ''
         btn.disabled = false
       }
       const b = box || (btn.parentElement && isBox(btn.parentElement) ? btn.parentElement : null)
@@ -396,14 +421,72 @@ function GuardRestartRow({ t, wide }) {
 
   // Initial status probe + paint on state change.
   useEffect(() => { loadStatus() }, [loadStatus])
-  useEffect(() => { const b = btnRef.current; if (b) paint(b, b.parentElement) }, [paint, armed, fuhuobiOk, ensureBusy, ensureError])
+  useEffect(() => { const b = btnRef.current; if (b) paint(b, b.parentElement) }, [paint, fuhuobiOk, ensureBusy, ensureError])
 
-  // Auto-disarm the confirmation after a few seconds.
+  // 确认 Popover（命令式 DOM：锚定圆钮，确定/取消；点击外部或 Esc 关闭）。
   useEffect(() => {
-    if (!armed) return
-    const timer = setTimeout(() => setArmed(false), 5000)
-    return () => clearTimeout(timer)
-  }, [armed])
+    if (!ask) return
+    const btn = btnRef.current
+    if (!btn || !btn.isConnected) { setAsk(false); return }
+    const pop = document.createElement('div')
+    pop.className = 'dgr-pop'
+    const title = document.createElement('p')
+    title.className = 'dgr-pop-title'
+    title.textContent = t('askTitle')
+    const body = document.createElement('p')
+    body.className = 'dgr-pop-body'
+    body.textContent = t('askBody')
+    const actions = document.createElement('div')
+    actions.className = 'dgr-pop-actions'
+    const cancelBtn = document.createElement('button')
+    cancelBtn.type = 'button'
+    cancelBtn.className = 'dgr-pop-btn dgr-pop-cancel'
+    cancelBtn.textContent = t('cancel')
+    cancelBtn.onclick = () => setAsk(false)
+    const okBtn = document.createElement('button')
+    okBtn.type = 'button'
+    okBtn.className = 'dgr-pop-btn dgr-pop-ok'
+    okBtn.textContent = t('ok')
+    okBtn.onclick = () => confirmRef.current()
+    actions.appendChild(cancelBtn)
+    actions.appendChild(okBtn)
+    pop.appendChild(title)
+    pop.appendChild(body)
+    pop.appendChild(actions)
+    document.body.appendChild(pop)
+
+    // 锚定定位：优先放在圆钮下方右对齐；空间不足则放上方。
+    pop.style.visibility = 'hidden'
+    const rect = btn.getBoundingClientRect()
+    const GAP = 8
+    const below = rect.bottom + GAP + pop.offsetHeight <= window.innerHeight - GAP
+    const top = below ? rect.bottom + GAP : Math.max(GAP, rect.top - GAP - pop.offsetHeight)
+    let right = Math.max(GAP, window.innerWidth - rect.right)
+    if (window.innerWidth - right - pop.offsetWidth < GAP) right = Math.max(GAP, window.innerWidth - GAP - pop.offsetWidth)
+    pop.style.top = top + 'px'
+    pop.style.right = right + 'px'
+    pop.dataset.dgrPopArrow = below ? 'top' : 'bottom'
+    pop.style.visibility = ''
+
+    const close = () => setAsk(false)
+    const onDown = (e) => {
+      if (!pop.contains(e.target) && e.target !== btn) close()
+    }
+    const onKey = (e) => { if (e.key === 'Escape') close() }
+    document.addEventListener('mousedown', onDown, true)
+    document.addEventListener('keydown', onKey, true)
+    window.addEventListener('scroll', close, true)
+    window.addEventListener('resize', close)
+    cancelBtn.focus() // 默认焦点在取消：回车不会误触发重启
+
+    return () => {
+      document.removeEventListener('mousedown', onDown, true)
+      document.removeEventListener('keydown', onKey, true)
+      window.removeEventListener('scroll', close, true)
+      window.removeEventListener('resize', close)
+      if (pop.parentElement) pop.parentElement.removeChild(pop)
+    }
+  }, [ask, t])
 
   // Restarting overlay (imperative) + boot-id poll.
   useEffect(() => {
