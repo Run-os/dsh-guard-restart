@@ -6,19 +6,6 @@ var module = { exports: {} }; var exports = module.exports;
  * dsh-guard-restart client: a guarded-restart button in the left sidebar,
  * displayed on its own row directly ABOVE the Settings row.
  *
- * v0.5.1（2026-09-11 故障回退）：
- *   v0.5.0 把按钮改为命令式注入「设置」行（settingsArea 绝对定位圆钮），并
- *   用 `MutationObserver(document.body, { childList, subtree })` + 3s 心跳来
- *   保活。实测（多轮冷启动）服务端一切正常，但**前端 splash 一直卡在
- *   "Loading plugins…"**：全页面的 DOM 变更都会触发 reconcile，而 reconcile
- *   内部又 remove/appendChild/改 style，与页面其它插件的 DOM 活动（聊天、
- *   动画等）形成自激，主线程被占死，前端 `loader.await()` 永不完成。
- *   经 probe（electron 实测）确认为 0.5.0 引入（0.4.x 同一 inject 与 apply
- *   结构、仅观察 footArea 局部 DOM 时前端正常）。
- *   修复：回退为 0.4.1 的 footArea 实现（局部 MutationObserver，只重排自身
- *   按钮行），按钮仍在「设置」上方独立一行（用户实测正常）。
- */
- *
  * Mounting strategy (imperative portal):
  *   - The slot renderer mounts this component inside the `sidebar.footer.action`
  *     container. We render only an invisible anchor there (React-owned), then
@@ -35,6 +22,15 @@ var module = { exports: {} }; var exports = module.exports;
  * /dsh-guard-restart/restart (host schedules a guarded restart through
  * dsh-fuhuobi's boot-guard / systemd) and shows a full-screen overlay; the
  * page polls /dsh-guard-restart/ping until the boot id changes, then reloads.
+ *
+ * v0.5.1（2026-09-11 故障回退）：v0.5.0 把可见按钮改为命令式注入「设置」行
+ * （settingsArea 绝对定位圆钮），并用 `MutationObserver(document.body, { childList,
+ * subtree })` + 3s 心跳保活。实测多轮冷启动服务端一切正常，但**前端 splash 一直
+ * 卡在 "Loading plugins…"**：全页面 DOM 变更都会触发 reconcile，而 reconcile 又
+ * remove/appendChild/改 style，与页面其余插件的 DOM 活动自激，主线程被占死，
+ * 前端 `loader.await()` 永不完成（0.4.x 同一 inject/apply、仅局部观察 footArea
+ * 时前端正常）。修复：回退为 0.4.1 的 footArea 实现，按钮回到「设置」上方独立
+ * 一行，footerStack 默认关闭。
  */
 
 const React = require('react')
