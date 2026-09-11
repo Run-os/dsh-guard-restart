@@ -34,6 +34,7 @@ var module = { exports: {} }; var exports = module.exports;
  *   bg-layer-3 / radius 12 / hover 描边 / open 态反馈），并把 injectStyles()
  *   提升到 apply() 入口无条件注入（原来只在组件 useEffect 里调用，卡片样式
  *   依赖侧边栏槽挂载；参考 dsh-eco-fixes STYLE-DIFF-REPORT）。
+ *   v0.7.3 圆钮图标由 ↻（U+21BB）换成 ⟳（U+27F3 刷新箭头，用户选定）。
  */
 
 const React = require('react')
@@ -43,7 +44,7 @@ const { useState, useEffect, useRef, useCallback } = React
 const NS = 'dsh-guard-restart'
 const POLL_MS = 1000
 const STUCK_AFTER_MS = 60000
-const BTN_VERSION = '0.7.1'
+const BTN_VERSION = '0.7.3'
 
 const zh = {
   btn: '守护重启',
@@ -323,7 +324,7 @@ function GuardRestartRow({ t, wide }) {
       } else {
         btn.dataset.dgrMode = 'restart'
         btn.className = 'dgr-nub'
-        btn.textContent = '↻'
+        btn.textContent = '⟳'
         btn.title = s.t('hint') || ''
         btn.disabled = false
       }

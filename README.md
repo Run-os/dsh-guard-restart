@@ -24,7 +24,7 @@ dsh plugin --profile web add /root/deepseek/project/dsh-guard-restart
 ## 侧边栏位置说明 · 按钮在「设置」行内（v0.6.0 起）
 
 - 本插件在 `sidebar.footer.action` 槽挂载 GuardRestartRow（React 生命周期载体，渲染为空）。
-- **可见入口**：命令式注入 **`settingsArea`（设置行）内**的绝对定位小圆钮（28px，↻），与**设置按钮同一行**（参考 dsh-fuhuobi）；**避让**同行 `[data-nio-rst]`（硬性重启钮）与 `[data-fuhuobi-rst]`（dsh-fuhuobi 存币钮）。
+- **可见入口**：命令式注入 **`settingsArea`（设置行）内**的绝对定位小圆钮（28px，⟳ 刷新箭头，v0.7.3 由 ↻ 更换），与**设置按钮同一行**（参考 dsh-fuhuobi）；**避让**同行 `[data-nio-rst]`（硬性重启钮）与 `[data-fuhuobi-rst]`（dsh-fuhuobi 存币钮）。
 - **保活**：`MutationObserver(document.body)` + head observer + 800ms 一次 + 3s 心跳（参考 dsh-fuhuobi 的 guarded-restart supervisor）；reconcile **严格幂等**（条件不满足不写 DOM，收敛即静默），绝不修改其它插件 DOM。
 - 交互：缺 dsh-fuhuobi 时点按 = 自动安装；就绪后点按弹出一个锚定圆钮的确认
   **Popover**（询问是否重启，两个按钮：**确定 / 取消**），点「确定」才守护重启，
