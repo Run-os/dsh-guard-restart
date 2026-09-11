@@ -336,18 +336,21 @@ function GuardRestartRow({ t, wide, scope }) {
     } catch { /* 本按钮问题绝不影响页面 */ }
   }, [])
 
-  // supervisor：把圆钮注入设置行并保活（幂等 reconcile，参考 fuhuobi）。
+  // supervisor：把圆钮注入设置行并保活。
+  //   - observer 回调只做 100ms 防抖触发（kick），启动期 DOM 风暴被合并，
+  //     不会高频全量 reconcile（v0.6.0 教训：启动早期高频 reconcile + forced
+  //     reflow 会拖死 splash 的 loader.await）。
+  //   - 初始执行延迟 1500ms，等 client boot 的 DOM 风暴过去；4s 心跳兜底。
+  //   - reconcile 幂等收敛：稳定后不写 DOM；running 锁由 run() 统一管理。
   useEffect(() => {
     injectStyles()
     let disposed = false
     let running = false
     let timer = null
+    let debounce = null
     let heartbeat = null
 
     const reconcile = () => {
-      // 防重入由 schedule() 统一管理（running 锁）；此处绝不能再检查
-      // running——否则 schedule 置锁后再调 reconcile 会被自己的锁挡回，
-      // reconcile 永远空转（v0.6.0 初版 bug：按钮因此从未被创建）。
       try {
         const all = Array.from(document.querySelectorAll('[data-dgr-nub]'))
         if (all.length > 1) {
@@ -369,34 +372,44 @@ function GuardRestartRow({ t, wide, scope }) {
           return
         }
         if (!btn || !btn.isConnected) {
+          // 幂等定位（只读）；真正需要写盒定位时用 setProperty 一次到位，
+          // 避免每次 reconcile 读 getComputedStyle（forced reflow）。
+          try {
+            const pos = getComputedStyle(box).position
+            if (pos === 'static') box.style.setProperty('position', 'relative', 'important')
+          } catch {}
           btn = createNub(() => restartRef.current(), () => ensureRef.current())
           btnRef.current = btn
           box.appendChild(btn)
         } else if (!box.contains(btn)) {
           box.appendChild(btn) // 领养移动：监听器随元素保留，不重建
         }
-        if (getComputedStyle(box).position === 'static') {
-          try { box.style.position = 'relative' } catch {}
-        }
         paint(btn, box)
       } catch { /* 本按钮崩溃绝不致黑屏 */ }
     }
 
-    const schedule = () => {
+    const run = () => {
       if (disposed || running) return
       running = true
       try { reconcile() } finally { running = false }
     }
-    const moBody = new MutationObserver(schedule)
-    const moHead = new MutationObserver(schedule)
+    let pending = false
+    const kick = () => {
+      if (disposed || pending) return
+      pending = true
+      if (debounce) clearTimeout(debounce)
+      debounce = setTimeout(() => { pending = false; debounce = null; run() }, 100)
+    }
+    const moBody = new MutationObserver(kick)
+    const moHead = new MutationObserver(kick)
     try { moBody.observe(document.body, { childList: true, subtree: true }) } catch {}
     try { moHead.observe(document.head, { childList: true }) } catch {}
-    schedule()
-    timer = setTimeout(schedule, 800)
-    heartbeat = setInterval(schedule, 3000)
+    timer = setTimeout(run, 1500) // 避开 client boot 早期 DOM 风暴
+    heartbeat = setInterval(run, 4000)
 
     return () => {
       disposed = true
+      if (debounce) clearTimeout(debounce)
       if (timer) clearTimeout(timer)
       if (heartbeat) clearInterval(heartbeat)
       try { moBody.disconnect() } catch {}
