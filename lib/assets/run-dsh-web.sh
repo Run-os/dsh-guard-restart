@@ -1,13 +1,15 @@
 #!/bin/bash
 # DSH Web GUI 启动包装脚本 —— systemd ExecStart / cron @reboot 统一入口。
+# dsh-guard-restart-asset: run-dsh-web.sh v2
 # 由 dsh-guard-restart 插件的 POST /dsh-guard-restart/setup 自动生成；
 # 以本机人工验证过的版本为蓝本，仅将硬编码路径改为 $DSH_HOME 解析。
 #
 # 作用：
 #   1) 启动前释放监听端口 —— 清掉包括"孤儿进程"在内的任何残留占用者，
 #      杜绝 EADDRINUSE -> 无限重启 的崩溃循环；
-#   2) 用 exec 启动 dsh-fuhuobi 的 boot-guard —— 快照、两阶段健康检查、
-#      失败自动回滚重试、成功后自动铸复活币。
+#   2) 用 exec 启动本插件自带的 boot-guard（$DSH_HOME/boot-guard.sh）——
+#      快照、两阶段健康检查、失败自动回滚重试、成功后自动存回滚快照。
+#      整条守护链由 dsh-guard-restart 自带，不再需要 dsh-fuhuobi。
 #
 # 配置：端口默认 3080，可用 DSH_WEB_PORT 覆盖；DSH_HOME 默认 $HOME/.dsh
 #       （systemd 单元已注入 DSH_HOME，cron 环境由 @reboot 行注入 HOME）。

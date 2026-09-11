@@ -1,22 +1,23 @@
 #!/usr/bin/env bash
-# 本地副本（2026-09-11）：由 dsh-fuhuobi npm 包的 scripts/boot-guard.sh 复制，
-# 并按 systemd 托管需要做了局部修改（裸 wait → 按 PID 轮询，见下部注释）。
-# 升级 dsh-fuhuobi 后如需同步原版，先 diff 本文件与
-#   profiles/web/node_modules/dsh-fuhuobi/scripts/boot-guard.sh
-# boot-guard.sh - guarded boot for DeepSeek Harness (macOS/Linux).
+# boot-guard.sh - 守护启动 DeepSeek Harness（macOS/Linux）。
+# dsh-guard-restart-asset: boot-guard.sh v2
 #
-# Snapshots every profile, starts the DSH server, health-checks it, and on
-# failure kills the server, rolls back to the last good snapshot and retries
-# once. On first-attempt failure it also writes an incident report + marker.
+# 快照所有 profile → 启动 DSH → 两阶段健康检查；失败则杀掉服务、回滚到最近
+# 良好快照并重试一次；首次尝试失败还会写事故报告 + 待处理标记。
 #
-# Wire it into your launcher (or run it directly):
-#   DSH_HOME="$HOME/.dsh" HARNESS_ROOT=/path/to/harness ./boot-guard.sh
+# 来源（2026-09-11）：由 dsh-fuhuobi 的 scripts/boot-guard.sh 复制移植到
+# dsh-guard-restart，并把 guard CLI 从 dsh-fuhuobi 换成插件自带的
+# lib/assets/guard-cli.js（setup 安装到 $DSH_HOME/guard/guard-cli.js）——
+# 本脚本因此不再依赖 dsh-fuhuobi。另按 systemd 托管需要做了局部修改
+# （裸 wait → 按 PID 轮询，见下部注释）。setup 按版本标记自动替换旧副本。
 #
-# Launch order: if $DSH_HOME/guard/launch.json exists (written by the plugin on
-# every confirmed-good boot) it is consumed to start the server; otherwise a
-# `dsh` on PATH is used; otherwise the boot fails cleanly with a clear message.
+# 用法（通常由 systemd ExecStart 的 run-dsh-web.sh exec 进来）：
+#   DSH_HOME="$HOME/.dsh" ./boot-guard.sh
 #
-# Requires: node (guard CLI + launch manifest), curl (health probe).
+# 启动顺序：$DSH_HOME/guard/launch.json 存在（插件在每次"确认可用"启动后刷新）
+# 则按清单原样拉起；否则用 PATH 上的 dsh；再否则干净失败并给出提示。
+#
+# 依赖：node（guard CLI + 启动清单解析）、curl（健康探测）。
 set -u
 
 FIRST_WAIT_SEC="${FIRST_WAIT_SEC:-60}"
@@ -44,9 +45,13 @@ export DSH_HOME
 # no `dsh` on PATH), so we never have to guess.
 LAUNCH_JSON="$DSH_HOME/guard/launch.json"
 
-# Guard CLI lives inside the profile's node_modules. If it is missing we log a
-# single line and skip guard actions rather than crash the boot.
-CLI="$DSH_HOME/profiles/$PROFILE/node_modules/dsh-fuhuobi/scripts/guard-cli.js"
+# Guard CLI: 首选 setup 安装的 $DSH_HOME/guard/guard-cli.js（自包含，只依赖 node
+# 内置模块），回退到 profile 里 dsh-guard-restart 自带的副本。两者都缺失时只记
+# 一行日志并跳过 guard 动作，绝不因此让启动失败。
+CLI="$DSH_HOME/guard/guard-cli.js"
+if [ ! -f "$CLI" ]; then
+  CLI="$DSH_HOME/profiles/$PROFILE/node_modules/dsh-guard-restart/lib/assets/guard-cli.js"
+fi
 GUARD_MISSING_LOGGED=0
 
 LOG_DIR="$DSH_HOME/guard/logs"
@@ -153,9 +158,10 @@ fail_boot() {
   guard incident --kind boot-failure
   echo ""
   echo "=================================================="
-  echo " [DSH Revival Coin] Boot failed!"
-  echo " Double-click DSHReviveCoinX1.cmd on the desktop or in the DSH root,"
-  echo " or run: dsh-fuhuobi revive-coin"
+  echo " [dsh-guard-restart] DSH 守护启动失败"
+  echo " 已回滚到最近良好快照；排查请查看："
+  echo "   $LOG_DIR/ 下的 boot-*.log 与 incident-*.md"
+  echo " 手动恢复：node $CLI rollback --good && node $CLI status"
   echo "=================================================="
   echo ""
 }
@@ -181,7 +187,7 @@ log "started server (pgid $PID)"
 if wait_healthy "$FIRST_WAIT_SEC"; then
   log "boot ok on first attempt"
   set_status OK first-attempt
-  # Two-phase health check passed: auto-mint a revival coin (3-level rotation).
+  # Two-phase health check passed: auto-mint a rollback snapshot (3-level rotation).
   guard revive-coin --mark
   # Stay attached so launchers that kill the process group on window close
   # keep their close-to-quit semantics.  [local patch: systemd 下 viaShell=false

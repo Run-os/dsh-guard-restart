@@ -4,37 +4,33 @@ var module = { exports: {} }; var exports = module.exports;
 
 /**
  * dsh-guard-restart client: 可见入口为左侧边栏「设置」行内的圆钮（与设置按钮
- * 同一行，参考 dsh-fuhuobi 的守护重启按钮），点击两次确认后调用宿主
- * /dsh-guard-restart/restart 做守护重启；缺少 dsh-fuhuobi（复活币）时点按
- * 变为自动安装。
+ * 同一行），点击后弹出确认 Popover，「确定」即调用宿主
+ * /dsh-guard-restart/restart 做守护重启。
  *
- * 挂载策略（参考 dsh-fuhuobi 的 guard supervisor，2026-09-11 验证安全）：
- *   - 本插件在 `sidebar.footer.action` 槽挂载 GuardRestartRow（React 生命周期
- *     载体）；可见圆钮由命令式 DOM 注入「设置」行容器（settingsArea /
- *     sidebar.settings 槽 / aria-haspopup 按钮的父级，逐级降级定位）。
- *   - 保活 = `MutationObserver(document.body, {childList,subtree})` + head
- *     observer + 800ms 一次 + 3s 心跳；reconcile 严格幂等（条件不满足绝不写
- *     DOM，收敛后完全静默），带 running 重入护栏 —— 不会像 v0.5.0 那样与页面
- *     其它 DOM 活动自激占死主线程。
- *   - 按钮几何全部内联 !important，不依赖样式表存活；绝不修改其它插件 DOM。
+ * v0.8.0 起重启链路完全自带（不再安装 / 依赖 dsh-fuhuobi 复活币）：
+ *   - 宿主自带 $DSH_HOME/boot-guard.sh + guard/guard-cli.js + guard/launch.json，
+ *     重启由 systemd 单元或 boot-guard 直启完成（快照 → 健康检查 → 失败回滚）；
+ *   - 组件挂载时 POST /dsh-guard-restart/booted 作为"客户端渲染成功"回执，
+ *     宿主据此刷新启动清单并存一枚回滚快照（移植自 dsh-fuhuobi 的同名机制）。
  *
- * 交互流：点击圆钮弹出一个确认 Popover（确定/取消）；点「确定」才 POST
- * /dsh-guard-restart/restart，全屏遮罩 + 轮询 /ping 直到 boot id 变化后刷新。
+ * 挂载策略（2026-09-11 验证安全）：本插件在 `sidebar.footer.action` 槽挂载
+ * GuardRestartRow（React 生命周期载体）；可见圆钮由命令式 DOM 注入「设置」行
+ * 容器（settingsArea / sidebar.settings 槽 / aria-haspopup 按钮的父级，逐级
+ * 降级定位）。保活 = body/head 双 MutationObserver + 100ms 防抖 + 4s 心跳；
+ * reconcile 严格幂等（条件不满足绝不写 DOM），带 running 重入护栏。
+ *
+ * 交互流：点击圆钮 → 锚定确认 Popover（确定/取消）；「确定」才 POST
+ * /restart，全屏遮罩 + 轮询 /ping 直到 boot id 变化后刷新。
  *
  * 版本历史：
  *   v0.5.0 曾用「设置行圆钮 + 全页面 observer」实现同样入口，但 reconcile 每次
  *   无条件写 DOM 且与页面活动自激，导致重启后前端卡在 Loading plugins；v0.5.1
- *   回退 footArea 行按钮。v0.6.0 按用户要求回到设置行内圆钮，改用 fuhuobi 的
- *   幂等 supervisor 模式（已实测 fuhuobi 同机制长期稳定）。
- *   v0.7.0 移除 footerStack（侧边栏底部按钮各占一行）—— 该功能已迁移至
- *   dsh-eco-fixes（在「设置 → 插件 → 常用插件自愈」菜单里勾选）。
- *   v0.7.1 确认交互改为「点击圆钮 → 锚定 Popover（确定/取消）」：不再需要
- *   点两下确认（armed 红色✓态），防误触且意图更直观。
- *   v0.7.2 设置-插件状态卡片样式对齐 dsh-fuhuobi `.gdb-card`（border-l2 /
- *   bg-layer-3 / radius 12 / hover 描边 / open 态反馈），并把 injectStyles()
- *   提升到 apply() 入口无条件注入（原来只在组件 useEffect 里调用，卡片样式
- *   依赖侧边栏槽挂载；参考 dsh-eco-fixes STYLE-DIFF-REPORT）。
- *   v0.7.3 圆钮图标由 ↻（U+21BB）换成 ⟳（U+27F3 刷新箭头，用户选定）。
+ *   回退 footArea 行按钮。v0.6.0 回到设置行内圆钮，改用幂等 supervisor 模式。
+ *   v0.7.0 移除 footerStack（已迁移至 dsh-eco-fixes）。v0.7.1 确认交互改为
+ *   Popover。v0.7.2 卡片样式对齐 fuhuobi `.gdb-card` 并提前注入样式。
+ *   v0.7.3 圆钮图标 ↻ → ⟳（用户选定）。
+ *   v0.8.0 去掉「装复活币」分支与 fuhuobi 状态字段；卡片改为展示自带守护链
+ *   （boot-guard / guard-cli / 启动清单）与快照状态；新增 /booted 回执。
  */
 
 const React = require('react')
@@ -44,23 +40,19 @@ const { useState, useEffect, useRef, useCallback } = React
 const NS = 'dsh-guard-restart'
 const POLL_MS = 1000
 const STUCK_AFTER_MS = 60000
-const BTN_VERSION = '0.7.3'
+const BTN_VERSION = '0.8.0'
 
 const zh = {
   btn: '守护重启',
-  installing: '安装中…',
-  install: '装复活币',
-  failedInstall: '安装失败',
   askTitle: '确认守护重启？',
   askBody: '将重启 DeepSeek Harness，当前会话会短暂中断；启动失败会自动回滚，完成后页面自动刷新。',
   ok: '确定',
   cancel: '取消',
   restarting: '正在守护重启 DeepSeek Harness',
-  pleaseWait: '将经 dsh-fuhuobi 守护启动重启；失败会自动回滚，完成后页面自动刷新',
+  pleaseWait: '将经自带 boot-guard 守护启动重启（快照→健康检查→失败回滚）；完成后页面自动刷新',
   stuck: '重启耗时有点久，服务可能未正常启动。点下方按钮手动刷新，或检查服务日志。',
   refresh: '手动刷新',
-  hint: '守护重启：systemctl restart 走 dsh-fuhuobi boot-guard（健康检查→失败回滚→成功存复活币）',
-  missing: '缺少 dsh-fuhuobi（复活币），点按安装',
+  hint: '守护重启：systemd / 自带 boot-guard（快照 → 健康检查 → 失败回滚 → 成功存回滚快照）',
   cardTitle: '守护重启',
   cardLoading: '检测中…',
   cardFailed: '读取状态失败',
@@ -73,30 +65,36 @@ const zh = {
   sysdInactive: '未运行',
   sysdEnabled: '开机自启',
   sysdDisabled: '未设自启',
-  fuhuobi: 'dsh-fuhuobi（复活币）',
-  fuhuobiInstalled: '已安装',
-  fuhuobiMissing: '未安装',
-  setupReady: '守护链完整：boot-guard → run-dsh-web.sh → systemd 单元',
-  setupMissing: '守护链有缺件，缺失时会在启动后自动补齐',
-  autoNote: '自动检测：每次 DSH 启动后 4 秒检查复活币、6 秒检查守护链（systemd 配置）；本卡片每次打开 / 刷新都会实时读取最新状态。',
-  // v0.7.0: footerStack（侧边栏底部按钮各占一行）已迁移至 dsh-eco-fixes
+  chain: '守护链（自带）',
+  chainBootGuard: 'boot-guard',
+  chainCli: 'guard-cli',
+  chainLaunch: '启动清单',
+  chainReady: '已就绪',
+  chainMissing: '缺失',
+  chainOutdated: '待升级',
+  snap: '回滚快照',
+  snapCount: '份数',
+  snapCurrent: '当前',
+  snapNone: '(无)',
+  restartMode: '重启方式',
+  modeSystemd: 'systemd 单元',
+  modeBootGuard: 'boot-guard 直启',
+  setupReady: '守护链完整：boot-guard.sh → run-dsh-web.sh → systemd 单元',
+  setupMissing: '守护链有缺件，启动后 6 秒会自动补齐/升级',
+  autoNote: '自动检测：每次 DSH 启动后 6 秒检查并补齐守护链；客户端渲染成功会自动刷新启动清单并存快照。本卡片每次打开 / 刷新都实时读取最新状态。',
 }
 
 const en = {
   btn: 'Guard restart',
-  installing: 'Installing…',
-  install: 'Install fuhuobi',
-  failedInstall: 'Install failed',
   askTitle: 'Restart DeepSeek Harness?',
   askBody: 'The current session will briefly interrupt; it auto-rolls back on failure and the page reloads once it is back.',
   ok: 'Restart',
   cancel: 'Cancel',
   restarting: 'Guard-restarting DeepSeek Harness',
-  pleaseWait: 'Restarting via dsh-fuhuobi guarded boot; auto-rollback on failure. The page reloads when it is back.',
+  pleaseWait: 'Restarting via the bundled boot-guard (snapshot, health check, auto rollback). The page reloads when it is back.',
   stuck: 'This is taking a while; the service may not have come back. Refresh manually or check the service logs.',
   refresh: 'Refresh now',
-  hint: 'Guarded restart: systemctl restart via dsh-fuhuobi boot-guard (health check, auto rollback, revival coin).',
-  missing: 'dsh-fuhuobi (revival coin) is missing; click to install',
+  hint: 'Guarded restart: systemd / bundled boot-guard (snapshot, health check, auto rollback, rollback-snapshot on success).',
   cardTitle: 'Guard restart',
   cardLoading: 'Checking…',
   cardFailed: 'Failed to read status',
@@ -109,12 +107,23 @@ const en = {
   sysdInactive: 'Inactive',
   sysdEnabled: 'Enabled',
   sysdDisabled: 'Disabled',
-  fuhuobi: 'dsh-fuhuobi (revival coin)',
-  fuhuobiInstalled: 'Installed',
-  fuhuobiMissing: 'Missing',
-  setupReady: 'Guard chain complete: boot-guard → run-dsh-web.sh → systemd unit',
-  setupMissing: 'Guard chain has gaps; they are auto-provisioned after startup',
-  autoNote: 'Auto-check: after every DSH start, fuhuobi is checked at 4s and the guard chain (systemd config) at 6s; opening / refreshing this card always reads the latest state.',
+  chain: 'Guard chain (bundled)',
+  chainBootGuard: 'boot-guard',
+  chainCli: 'guard-cli',
+  chainLaunch: 'launch manifest',
+  chainReady: 'ready',
+  chainMissing: 'missing',
+  chainOutdated: 'outdated',
+  snap: 'Rollback snapshots',
+  snapCount: 'count',
+  snapCurrent: 'current',
+  snapNone: '(none)',
+  restartMode: 'Restart mode',
+  modeSystemd: 'systemd unit',
+  modeBootGuard: 'boot-guard direct',
+  setupReady: 'Guard chain complete: boot-guard.sh → run-dsh-web.sh → systemd unit',
+  setupMissing: 'Guard chain has gaps; auto-provisioned/upgraded 6s after startup',
+  autoNote: 'Auto-check: the guard chain is verified and repaired 6s after every DSH start; a client render confirm refreshes the launch manifest and mints a rollback snapshot. Opening / refreshing this card always reads the latest state.',
 }
 
 const CSS = `
@@ -198,7 +207,7 @@ function resolveBox() {
   return null
 }
 
-function createNub(onClick, onInstall) {
+function createNub(onClick) {
   const btn = document.createElement('button')
   btn.type = 'button'
   btn.className = 'dgr-nub'
@@ -222,7 +231,6 @@ function createNub(onClick, onInstall) {
   btn.style.setProperty('z-index', '10', 'important')
   btn.addEventListener('click', (e) => {
     e.stopPropagation()
-    if (btn.dataset.dgrMode === 'install') { onInstall(); return }
     onClick()
   })
   return btn
@@ -234,50 +242,24 @@ function GuardRestartRow({ t, wide }) {
   const [restarting, setRestarting] = useState(false)
   const [stuck, setStuck] = useState(false)
   const [elapsed, setElapsed] = useState(0)
-  const [fuhuobiOk, setFuhuobiOk] = useState(null)
-  const [ensureBusy, setEnsureBusy] = useState(false)
-  const [ensureError, setEnsureError] = useState(false)
   const oldBoot = useRef(null)
   const btnRef = useRef(null)
 
-  const ensureRef = useRef(() => {})
   const restartRef = useRef(() => {})
   const confirmRef = useRef(() => {})
   // 最新状态供命令式按钮刷新（supervisor 的 paint 从这儿取）。
-  const stateRef = useRef({ fuhuobiOk: null, ensureBusy: false, ensureError: false, t })
-  stateRef.current.fuhuobiOk = fuhuobiOk
-  stateRef.current.ensureBusy = ensureBusy
-  stateRef.current.ensureError = ensureError
+  const stateRef = useRef({ t })
   stateRef.current.t = t
 
-  const loadStatus = useCallback(async () => {
-    try {
-      const res = await fetch('/dsh-guard-restart/status', { cache: 'no-store' })
-      if (!res.ok) return
-      const body = await res.json()
-      setFuhuobiOk(!!(body.fuhuobi && body.fuhuobi.installed))
-    } catch { /* host unreachable */ }
+  // 「客户端渲染成功」回执：宿主据此刷新启动清单 + 存一枚回滚快照
+  // （移植自 dsh-fuhuobi 的 /fuhuobi/api/booted；每进程只生效一次）。
+  useEffect(() => {
+    fetch('/dsh-guard-restart/booted', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    }).catch(() => { /* host 不可达时忽略 */ })
   }, [])
-
-  const ensureFuhuobi = useCallback(async () => {
-    if (ensureBusy) return
-    setEnsureBusy(true)
-    setEnsureError(false)
-    try {
-      const res = await fetch('/dsh-guard-restart/ensure-fuhuobi', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: '{}',
-      })
-      if (!res.ok) throw new Error(String(res.status))
-      await new Promise((resolve) => setTimeout(resolve, 1200))
-      await loadStatus()
-    } catch {
-      setEnsureError(true)
-    } finally {
-      setEnsureBusy(false)
-    }
-  }, [ensureBusy, loadStatus])
 
   // 点击圆钮 = 弹出确认 Popover（不直接重启）。
   const onRestart = useCallback(() => {
@@ -305,7 +287,6 @@ function GuardRestartRow({ t, wide }) {
     } catch { /* response may be lost when the host dies right after */ }
   }, [restarting])
 
-  useEffect(() => { ensureRef.current = ensureFuhuobi }, [ensureFuhuobi])
   useEffect(() => { restartRef.current = onRestart }, [onRestart])
   useEffect(() => { confirmRef.current = confirmRestart }, [confirmRestart])
 
@@ -314,23 +295,14 @@ function GuardRestartRow({ t, wide }) {
     if (!btn) return
     try {
       const s = stateRef.current
-      const fh = s.fuhuobiOk
-      if (fh === false) {
-        btn.dataset.dgrMode = 'install'
-        btn.className = 'dgr-nub dgr-nub-warn' + (s.ensureBusy ? ' dgr-nub-busy' : '')
-        btn.textContent = s.ensureBusy ? '…' : '✚'
-        btn.title = s.ensureBusy ? (s.t('installing') || 'installing') : (s.ensureError ? (s.t('failedInstall') || 'failed') : (s.t('missing') || 'missing'))
-        btn.disabled = !!s.ensureBusy
-      } else {
-        btn.dataset.dgrMode = 'restart'
-        btn.className = 'dgr-nub'
-        btn.textContent = '⟳'
-        btn.title = s.t('hint') || ''
-        btn.disabled = false
-      }
+      btn.dataset.dgrMode = 'restart'
+      btn.className = 'dgr-nub'
+      btn.textContent = '⟳'
+      btn.title = s.t('hint') || ''
+      btn.disabled = false
       const b = box || (btn.parentElement && isBox(btn.parentElement) ? btn.parentElement : null)
       if (b) {
-        // 避让同行 [data-nio-rst]（硬性重启）与 [data-fuhuobi-rst]（复活币存币钮）。
+        // 避让同行其它插件按钮（硬性重启 [data-nio-rst] / 复活币存币钮 [data-fuhuobi-rst]）。
         const nio = b.querySelector('[data-nio-rst]')
         const fhb = b.querySelector('[data-fuhuobi-rst]')
         btn.style.setProperty('right', (8 + (nio ? 34 : 0) + (fhb ? 34 : 0)) + 'px', 'important')
@@ -384,7 +356,7 @@ function GuardRestartRow({ t, wide }) {
             const pos = getComputedStyle(box).position
             if (pos === 'static') box.style.setProperty('position', 'relative', 'important')
           } catch {}
-          btn = createNub(() => restartRef.current(), () => ensureRef.current())
+          btn = createNub(() => restartRef.current())
           btnRef.current = btn
           box.appendChild(btn)
         } else if (!box.contains(btn)) {
@@ -427,8 +399,7 @@ function GuardRestartRow({ t, wide }) {
   }, [paint])
 
   // Initial status probe + paint on state change.
-  useEffect(() => { loadStatus() }, [loadStatus])
-  useEffect(() => { const b = btnRef.current; if (b) paint(b, b.parentElement) }, [paint, fuhuobiOk, ensureBusy, ensureError])
+  useEffect(() => { const b = btnRef.current; if (b) paint(b, b.parentElement) }, [paint])
 
   // 确认 Popover（命令式 DOM：锚定圆钮，确定/取消；点击外部或 Esc 关闭）。
   useEffect(() => {
@@ -590,16 +561,25 @@ function GuardStatusCard({ t }) {
 
   const s = status || {}
   const sysd = s.systemd || {}
-  const fuhuobi = s.fuhuobi || {}
+  const guard = s.guard || {}
   const setup = s.setup || {}
+  const snap = guard.snapshot || {}
+  const restart = s.restart || {}
 
   const badge = (ok, good, bad) => h('span', { className: 'dgs-badge ' + (ok ? 'dgs-ok' : 'dgs-bad') }, ok ? good : bad)
-  const fuhuobiOk = fuhuobi.installed === true
+  // 资产三态：就绪（绿）/ 待升级（黄）/ 缺失（红）—— 兼容旧宿主只给 present 的情况。
+  const assetBadge = (info) => {
+    const ok = info && info.present === true
+    const outdated = ok && info.upToDate === false
+    if (outdated) return h('span', { className: 'dgs-badge dgs-warn' }, t('chainOutdated'))
+    return badge(ok, t('chainReady'), t('chainMissing'))
+  }
+  const chainOk = !!(guard.bootGuard && guard.bootGuard.present && guard.cli && guard.cli.present && guard.launch && guard.launch.present)
   const sysdOk = !!(sysd.present && sysd.active && sysd.enabled)
 
   const summary = status === null
     ? (failed ? t('cardFailed') : t('cardLoading'))
-    : (fuhuobiOk ? '✓ ' + t('fuhuobiInstalled') : '✗ ' + t('fuhuobiMissing')) + ' · ' + (sysdOk ? '✓ systemd' : '· systemd')
+    : (chainOk ? '✓ ' + t('chain') : '✗ ' + t('chainMissing')) + ' · ' + (sysdOk ? '✓ systemd' : '· systemd')
 
   return h('li', { className: 'dgs-card' + (open ? ' dgs-open' : '') },
     h('button', {
@@ -622,12 +602,25 @@ function GuardStatusCard({ t }) {
         ),
       ),
       h('div', { className: 'dgs-row' },
-        h('span', { className: 'dgs-label' }, t('fuhuobi')),
+        h('span', { className: 'dgs-label' }, t('chain')),
         h('span', { className: 'dgs-value' },
-          badge(fuhuobiOk, t('fuhuobiInstalled'), t('fuhuobiMissing')),
+          h('span', { className: 'dgs-badge dgs-neutral' }, t('chainBootGuard')), assetBadge(guard.bootGuard),
+          h('span', { className: 'dgs-badge dgs-neutral' }, t('chainCli')), assetBadge(guard.cli),
+          h('span', { className: 'dgs-badge dgs-neutral' }, t('chainLaunch')), assetBadge(guard.launch),
+        ),
+      ),
+      h('div', { className: 'dgs-row' },
+        h('span', { className: 'dgs-label' }, t('snap')),
+        h('span', { className: 'dgs-value' },
+          h('span', { className: 'dgs-badge dgs-neutral' }, t('snapCount') + ' ' + (snap.count ?? 0)),
+          h('span', { className: 'dgs-badge dgs-neutral' }, t('snapCurrent') + ' ' + (snap.current || t('snapNone'))),
+        ),
+      ),
+      h('div', { className: 'dgs-row' },
+        h('span', { className: 'dgs-label' }, t('restartMode')),
+        h('span', { className: 'dgs-value' },
           h('span', { className: 'dgs-badge dgs-neutral' },
-            (fuhuobi.dep ? 'dep ✓' : 'dep ✗') + ' · ' + (fuhuobi.bundle ? 'bundle ✓' : 'bundle ✗'),
-          ),
+            restart.mode === 'systemd' ? t('modeSystemd') : t('modeBootGuard')),
         ),
       ),
       h('div', { className: 'dgs-row' },
@@ -655,8 +648,8 @@ exports.name = 'dsh-guard-restart'
 exports.inject = ['slots', 'locale', 'settingsScope']
 exports.apply = function apply(ctx) {
   // 无条件注入全部样式（卡片边框/底色、Popover、遮罩等）：与卡片渲染解耦，
-  // 插件一启动即就绪——对齐 dsh-fuhuobi 的 installStyles 语义，避免
-  // 只依赖组件 useEffect 调用导致样式表缺失、卡片退化为无边框裸文本。
+  // 插件一启动即就绪，避免只依赖组件 useEffect 调用导致样式表缺失、卡片退化
+  // 为无边框裸文本（v0.7.2 起，参考 dsh-eco-fixes STYLE-DIFF-REPORT 同款根因）。
   injectStyles()
   try {
     ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-guard-restart: dictionaries')
@@ -675,8 +668,8 @@ exports.apply = function apply(ctx) {
     }, ({ wide }) => h(GuardRestartRow, { t, wide })))
   } catch { /* slot unavailable: button absent, rest unaffected */ }
 
-  // 设置 > 插件 > 插件配置：「守护重启」状态卡片（v0.7.0 起仅有
-  // systemd / fuhuobi 状态,不再含 footerStack 开关）。
+  // 设置 > 插件 > 插件配置：「守护重启」状态卡片（v0.8.0 起展示自带守护链
+  // boot-guard / guard-cli / 启动清单 + systemd + 快照状态，来自 /status）。
   if (scope) {
     try {
       ctx.slots.inject('settings.plugin.item', function* () {
