@@ -21,28 +21,18 @@ dsh plugin --profile web add /root/deepseek/project/dsh-guard-restart
 
 重启 DSH（`systemctl restart dsh-web`）后生效。
 
-## 侧边栏位置说明 · 按钮在「设置」上方独立一行（v0.5.1 起回退）
+## 侧边栏位置说明 · 按钮在「设置」行内（v0.6.0 起）
 
-> ⚠️ v0.5.0 曾把可见按钮改为注入设置行（settingsArea 绝对定位圆钮），并用全页面
-> `MutationObserver(document.body)` 保活；实测导致 **DSH 重启后前端一直卡在
-> "Loading plugins…"**（服务端正常，前端 client 树加载卡死，观察器与页面其余
-> DOM 活动自激占死主线程）。v0.5.1 已回退为 0.4.1 的 footArea 实现（局部观察，
-> 按钮在「设置」上方独立一行，用户实测正常）。
+- 本插件在 `sidebar.footer.action` 槽只渲染**不可见锚点**（占位 + footerStack 开关需要其父容器引用）。
+- **可见入口**：命令式注入 **`settingsArea`（设置行）内**的绝对定位小圆钮（28px，↻），与**设置按钮同一行**（参考 dsh-fuhuobi）；**避让**同行 `[data-nio-rst]`（硬性重启钮）与 `[data-fuhuobi-rst]`（dsh-fuhuobi 存币钮）。
+- **保活**：`MutationObserver(document.body)` + head observer + 800ms 一次 + 3s 心跳（参考 dsh-fuhuobi 的 guarded-restart supervisor）；reconcile **严格幂等**（条件不满足不写 DOM，收敛即静默），绝不修改其它插件 DOM。
+- 交互：缺 dsh-fuhuobi 时点按 = 自动安装；就绪后第一次点按进入确认态（红色 ✓，5 秒自动解除），再点一次才守护重启；重启期间全屏遮罩 + 轮询 `/ping` 自动刷新。
 
-
-DSH 侧边栏底部（foot）是纵向布局：`sidebar.footer.action`（操作行，cost-meter 徽章与
-auto-memory 按钮所在）→ `sidebar.settings`（设置行）。本插件先注册进
-`sidebar.footer.action` 只为一个**不可见锚点**（获得渲染生命周期），**可见按钮**
-改为命令式注入到 **`settingsArea`（设置行）内**：绝对定位小圆钮（28px，↻），与
-设置按钮同一行，且**避让**同行的 `[data-nio-rst]`（硬性重启钮）与
-`[data-fuhuobi-rst]`（dsh-fuhuobi 存币钮），各自不重叠。
-MutationObserver + 3s 心跳保证在其它 UI 插件重渲染时按钮存活（机制参考
-dsh-fuhuobi 的 guarded-restart supervisor，绝不修改任何其它插件的 DOM）。
-
-交互（与旧版一致）：复活币缺失时点按 = 自动安装；就绪后第一次点按进入确认态
-（红色 ✓），5 秒内再点一次才触发守护重启；重启期间全屏遮罩 + 轮询 `/ping`
-自动刷新。
-
+> ⚠️ 历史教训（v0.5.0 / v0.5.1）：v0.5.0 用同一入口但 reconcile 每次无条件写 DOM 并
+> 与页面其余 DOM 活动自激，实测导致 DSH 重启后端前端 splash 一直卡在
+> "Loading plugins…"（服务端正常、无报错）；v0.5.1 曾回退 footArea 行按钮。
+> v0.6.0 回到设置行内圆钮，改用 fuhuobi 的幂等 supervisor 模式（同机制已在
+> dsh-fuhuobi 长期稳定运行）。
 ## 服务端路由（同源保护）
 
 | 路由 | 说明 |

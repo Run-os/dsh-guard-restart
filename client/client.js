@@ -3,34 +3,30 @@ var module = { exports: {} }; var exports = module.exports;
 'use strict'
 
 /**
- * dsh-guard-restart client: a guarded-restart button in the left sidebar,
- * displayed on its own row directly ABOVE the Settings row.
+ * dsh-guard-restart client: 可见入口为左侧边栏「设置」行内的圆钮（与设置按钮
+ * 同一行，参考 dsh-fuhuobi 的守护重启按钮），点击两次确认后调用宿主
+ * /dsh-guard-restart/restart 做守护重启；缺少 dsh-fuhuobi（复活币）时点按
+ * 变为自动安装。
  *
- * Mounting strategy (imperative portal):
- *   - The slot renderer mounts this component inside the `sidebar.footer.action`
- *     container. We render only an invisible anchor there (React-owned), then
- *     imperatively create the REAL visible row and seat it in the sidebar foot
- *     right before the settings area. The shell foot is a column of exactly two
- *     element children: [footer-actions, settings-area].
- *   - Because React never owns the visible node, React re-renders cannot yank
- *     it back into the footer-actions container — and dsh-cost-meter's badge
- *     keeps living undisturbed inside that container (it actively re-orders
- *     itself there via MutationObserver, which previously collided with a
- *     React-managed sibling and blanked it).
+ * 挂载策略（参考 dsh-fuhuobi 的 guard supervisor，2026-09-11 验证安全）：
+ *   - 本插件在 `sidebar.footer.action` 槽只渲染一个不可见锚点（占位、
+ *     footerStack 开关需要其父容器引用）；可见圆钮由命令式 DOM 注入「设置」
+ *     行容器（settingsArea / sidebar.settings 槽 / aria-haspopup 按钮的父级，
+ *     逐级降级定位）。
+ *   - 保活 = `MutationObserver(document.body, {childList,subtree})` + head
+ *     observer + 800ms 一次 + 3s 心跳；reconcile 严格幂等（条件不满足绝不写
+ *     DOM，收敛后完全静默），带 running 重入护栏 —— 不会像 v0.5.0 那样与页面
+ *     其它 DOM 活动自激占死主线程。
+ *   - 按钮几何全部内联 !important，不依赖样式表存活；绝不修改其它插件 DOM。
  *
- * Flow: first click arms a confirmation; the second click POSTs
- * /dsh-guard-restart/restart (host schedules a guarded restart through
- * dsh-fuhuobi's boot-guard / systemd) and shows a full-screen overlay; the
- * page polls /dsh-guard-restart/ping until the boot id changes, then reloads.
+ * 交互流：第一次点击进入确认态（红色✓，5 秒自动解除）；第二次点击 POST
+ * /dsh-guard-restart/restart，全屏遮罩 + 轮询 /ping 直到 boot id 变化后刷新。
  *
- * v0.5.1（2026-09-11 故障回退）：v0.5.0 把可见按钮改为命令式注入「设置」行
- * （settingsArea 绝对定位圆钮），并用 `MutationObserver(document.body, { childList,
- * subtree })` + 3s 心跳保活。实测多轮冷启动服务端一切正常，但**前端 splash 一直
- * 卡在 "Loading plugins…"**：全页面 DOM 变更都会触发 reconcile，而 reconcile 又
- * remove/appendChild/改 style，与页面其余插件的 DOM 活动自激，主线程被占死，
- * 前端 `loader.await()` 永不完成（0.4.x 同一 inject/apply、仅局部观察 footArea
- * 时前端正常）。修复：回退为 0.4.1 的 footArea 实现，按钮回到「设置」上方独立
- * 一行，footerStack 默认关闭。
+ * 版本历史：
+ *   v0.5.0 曾用「设置行圆钮 + 全页面 observer」实现同样入口，但 reconcile 每次
+ *   无条件写 DOM 且与页面活动自激，导致重启后前端卡在 Loading plugins；v0.5.1
+ *   回退 footArea 行按钮。v0.6.0 按用户要求回到设置行内圆钮，改用 fuhuobi 的
+ *   幂等 supervisor 模式（已实测 fuhuobi 同机制长期稳定）。
  */
 
 const React = require('react')
@@ -40,6 +36,7 @@ const { useState, useEffect, useRef, useCallback } = React
 const NS = 'dsh-guard-restart'
 const POLL_MS = 1000
 const STUCK_AFTER_MS = 60000
+const BTN_VERSION = '0.6.0'
 
 const zh = {
   btn: '守护重启',
@@ -52,7 +49,7 @@ const zh = {
   stuck: '重启耗时有点久，服务可能未正常启动。点下方按钮手动刷新，或检查服务日志。',
   refresh: '手动刷新',
   hint: '守护重启：systemctl restart 走 dsh-fuhuobi boot-guard（健康检查→失败回滚→成功存复活币）',
-  missing: '缺少 dsh-fuhuobi（复活币）',
+  missing: '缺少 dsh-fuhuobi（复活币），点按安装',
   cardTitle: '守护重启',
   cardLoading: '检测中…',
   cardFailed: '读取状态失败',
@@ -87,7 +84,7 @@ const en = {
   stuck: 'This is taking a while; the service may not have come back. Refresh manually or check the service logs.',
   refresh: 'Refresh now',
   hint: 'Guarded restart: systemctl restart via dsh-fuhuobi boot-guard (health check, auto rollback, revival coin).',
-  missing: 'dsh-fuhuobi (revival coin) is missing',
+  missing: 'dsh-fuhuobi (revival coin) is missing; click to install',
   cardTitle: 'Guard restart',
   cardLoading: 'Checking…',
   cardFailed: 'Failed to read status',
@@ -112,16 +109,6 @@ const en = {
 }
 
 const CSS = `
-.dgr-seat{display:flex;align-items:center;gap:6px;width:100%;box-sizing:border-box;min-width:0;padding:4px 6px}
-.dgr-seat-rail{display:flex;justify-content:center;align-items:center;width:36px;padding:2px 0;box-sizing:border-box}
-.dgr-btn{flex:1;min-width:0;height:30px;border-radius:8px;border:1px solid var(--dsw-alias-border-l1,#e5e7eb);background:var(--dsw-alias-bg-layer-2,#f8fafc);color:var(--dsw-alias-label-primary,#1f2328);font-size:12px;line-height:1;font-weight:600;cursor:pointer;font-family:inherit;padding:0 10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:inline-flex;align-items:center;justify-content:center;gap:4px;transition:all .12s ease}
-.dgr-btn:hover{border-color:var(--dsw-alias-border-l2,#d0d5dd);background:var(--dsw-alias-interactive-bg-hover)}
-.dgr-btn.armed{background:var(--dsw-alias-state-error-primary,#dc2626);border-color:var(--dsw-alias-state-error-primary,#dc2626);color:#fff}
-.dgr-btn:disabled{cursor:default;opacity:.6}
-.dgr-mini{flex:none;height:30px;min-width:0;border-radius:8px;border:1px solid var(--dsw-alias-border-l1,#e5e7eb);background:transparent;color:var(--dsw-alias-label-secondary,#6b7280);font-size:12px;line-height:1;font-weight:600;cursor:pointer;font-family:inherit;padding:0 8px;white-space:nowrap}
-.dgr-mini:hover{color:var(--dsw-alias-state-warn-primary,#b45309);border-color:var(--dsw-alias-state-warn-primary,#b45309)}
-.dgr-btn-rail{width:36px;height:36px;border-radius:50%;border:none;background:transparent;color:var(--dsw-alias-label-secondary,#6b7280);font-size:18px;line-height:1;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;padding:0}
-.dgr-btn-rail:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary,#1f2328)}
 .dgr-mask{position:fixed;inset:0;z-index:9000;background:rgba(10,12,18,.55);display:flex;align-items:center;justify-content:center;pointer-events:auto}
 .dgr-card{width:min(360px,86vw);background:var(--dsw-alias-bg-layer-1,#fff);border:1px solid var(--dsw-alias-border-l1,#e5e7eb);border-radius:16px;padding:28px 24px;box-shadow:0 24px 70px rgba(0,0,0,.3);display:flex;flex-direction:column;align-items:center;gap:14px;text-align:center;color:var(--dsw-alias-label-primary,#1f2328)}
 .dgr-spin{width:34px;height:34px;border:3px solid var(--dsw-alias-border-l1,#e5e7eb);border-top-color:var(--dsw-alias-brand-primary,#4f6ef7);border-radius:99px;animation:dgr-sp .8s linear infinite}
@@ -131,6 +118,13 @@ const CSS = `
 .dgr-elapsed{font-size:12px;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-secondary,#6b7280)}
 .dgr-stuck{font-size:12px;color:var(--dsw-alias-state-warn-primary,#b45309);line-height:1.6;margin:0}
 .dgr-refresh{border:none;border-radius:8px;padding:8px 18px;font:inherit;font-size:13px;font-weight:600;cursor:pointer;background:var(--dsw-alias-button-primary-fill,#4f6ef7);color:var(--dsw-alias-label-primary-foreground,#fff)}
+.dgr-nub{color:var(--dsw-alias-label-secondary,#6b7280);font-size:15px;line-height:1;cursor:pointer}
+.dgr-nub:hover{color:var(--dsw-alias-label-primary,#1f2328)}
+.dgr-nub-armed{color:var(--dsw-alias-state-error-primary,#dc2626);background:rgba(220,38,38,.14)}
+.dgr-nub-armed:hover{color:#b91c1c}
+.dgr-nub-warn{color:var(--dsw-alias-state-warn-primary,#b45309)}
+.dgr-nub-warn:hover{color:#92400e}
+.dgr-nub-busy{opacity:.6;cursor:wait}
 .dgs-card{list-style:none;border:1px solid var(--dsw-alias-border-l1,#e5e7eb);border-radius:12px;background:var(--dsw-alias-bg-layer-1,#fff);overflow:hidden}
 .dgs-head{display:flex;width:100%;align-items:baseline;gap:12px;padding:12px 14px;background:none;border:none;cursor:pointer;font:inherit;text-align:left;color:inherit}
 .dgs-title{font-size:14px;font-weight:700;flex:none}
@@ -148,9 +142,6 @@ const CSS = `
 .dgs-refresh{border:1px solid var(--dsw-alias-border-l2,#d0d5dd);background:var(--dsw-alias-bg-layer-2,#f8fafc);color:var(--dsw-alias-label-primary,#1f2328);border-radius:8px;padding:5px 12px;font:inherit;font-size:12px;font-weight:600;cursor:pointer;align-self:flex-start;display:inline-flex;align-items:center;gap:6px}
 .dgs-refresh:disabled{opacity:.6;cursor:default}
 .dgs-mono{font-variant-numeric:tabular-nums;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-/* 脚区按钮独占一行（实验性，默认关闭）：加在 sidebar.footer.action 槽容器上。
-   注意不做 flex-direction:column —— v0.4.0 实测 column 会把第二行的
-   auto-memory 按钮挤出可视区；这里改用 flex-wrap + 每子项整行宽。 */
 .dgr-footer-stack{flex-wrap:wrap;row-gap:2px;overflow:visible}
 .dgr-footer-stack>*{flex:0 0 100%;box-sizing:border-box}
 `
@@ -164,8 +155,61 @@ function injectStyles() {
   document.head.appendChild(tag)
 }
 
+// ---------------------------------------------------------------------------
+// 设置行圆钮 supervisor（参考 dsh-fuhuobi：幂等 reconcile + body/head 双
+// observer + 心跳；收敛后不再写 DOM，不会自激）。
+// ---------------------------------------------------------------------------
+
+function isBox(el) {
+  try { return !!el && el instanceof Element && el.getBoundingClientRect && getComputedStyle(el).display !== 'contents' } catch { return false }
+}
+
+// 4 级降级定位「设置」行容器：settingsArea 类 → sidebar.settings 槽（含父级）
+// → aria-haspopup=dialog 按钮的父级。
+function resolveBox() {
+  const byClass = document.querySelector('[class*="settingsArea"]')
+  if (isBox(byClass)) return byClass
+  const slot = document.querySelector('[data-slot="sidebar.settings"]')
+  if (slot) {
+    if (slot.parentElement && isBox(slot.parentElement)) return slot.parentElement
+    if (isBox(slot)) return slot
+  }
+  const trigger = document.querySelector('button[aria-haspopup="dialog"]')
+  if (trigger && trigger.parentElement && isBox(trigger.parentElement)) return trigger.parentElement
+  return null
+}
+
+function createNub(onClick, onInstall) {
+  const btn = document.createElement('button')
+  btn.type = 'button'
+  btn.className = 'dgr-nub'
+  btn.setAttribute('data-dgr-nub', '1')
+  btn.dataset.dgrVersion = BTN_VERSION
+  btn.setAttribute('aria-label', '守护重启')
+  // 几何全部内联 !important：不依赖样式表存活，样式表没加载布局也不坏。
+  btn.style.setProperty('position', 'absolute', 'important')
+  btn.style.setProperty('top', '50%', 'important')
+  btn.style.setProperty('transform', 'translateY(-50%)', 'important')
+  btn.style.setProperty('width', '28px', 'important')
+  btn.style.setProperty('height', '28px', 'important')
+  btn.style.setProperty('box-sizing', 'border-box', 'important')
+  btn.style.setProperty('display', 'inline-flex', 'important')
+  btn.style.setProperty('align-items', 'center', 'important')
+  btn.style.setProperty('justify-content', 'center', 'important')
+  btn.style.setProperty('border', 'none', 'important')
+  btn.style.setProperty('border-radius', '50%', 'important')
+  btn.style.setProperty('padding', '0', 'important')
+  btn.style.setProperty('z-index', '10', 'important')
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation()
+    if (btn.dataset.dgrMode === 'install') { onInstall(); return }
+    onClick()
+  })
+  return btn
+}
+
 function GuardRestartRow({ t, wide, scope }) {
-  // Logic state (React-owned).
+  // ---- 交互状态（React 持有；命令式按钮通过 ref 读取/刷新）----
   const [armed, setArmed] = useState(false)
   const [restarting, setRestarting] = useState(false)
   const [stuck, setStuck] = useState(false)
@@ -174,20 +218,19 @@ function GuardRestartRow({ t, wide, scope }) {
   const [ensureBusy, setEnsureBusy] = useState(false)
   const [ensureError, setEnsureError] = useState(false)
   const oldBoot = useRef(null)
-  // footerStack 开关：是否让 sidebar.footer.action 槽容器换行堆叠（各插件
-  // 独占一行）。读取 settingsScope（默认 false，实验性）；无 settings
-  // 服务时保持默认关闭。
+  const anchorRef = useRef(null)
+  const btnRef = useRef(null)
   const stackRef = useRef(false)
 
-  // Imperative node + anchor: the anchor is React-owned (inside the slot
-  // container where the shell expects us); the real node is not.
-  const anchorRef = useRef(null)
-  const nodeRef = useRef(null)
-  const mountedRef = useRef(false)
-
-  // Keep latest handlers reachable from imperative DOM nodes.
   const ensureRef = useRef(() => {})
   const restartRef = useRef(() => {})
+  // 最新状态供命令式按钮刷新（supervisor 的 paint 从这儿取）。
+  const stateRef = useRef({ fuhuobiOk: null, armed: false, ensureBusy: false, ensureError: false, t })
+  stateRef.current.fuhuobiOk = fuhuobiOk
+  stateRef.current.armed = armed
+  stateRef.current.ensureBusy = ensureBusy
+  stateRef.current.ensureError = ensureError
+  stateRef.current.t = t
 
   const loadStatus = useCallback(async () => {
     try {
@@ -195,7 +238,7 @@ function GuardRestartRow({ t, wide, scope }) {
       if (!res.ok) return
       const body = await res.json()
       setFuhuobiOk(!!(body.fuhuobi && body.fuhuobi.installed))
-    } catch { /* host unreachable mid-restart */ }
+    } catch { /* host unreachable */ }
   }, [])
 
   const ensureFuhuobi = useCallback(async () => {
@@ -235,14 +278,13 @@ function GuardRestartRow({ t, wide, scope }) {
         headers: { 'content-type': 'application/json' },
         body: '{}',
       })
-    } catch { /* the response may be lost when the host dies right after */ }
+    } catch { /* response may be lost when the host dies right after */ }
   }, [armed, restarting])
 
   useEffect(() => { ensureRef.current = ensureFuhuobi }, [ensureFuhuobi])
   useEffect(() => { restartRef.current = onRestart }, [onRestart])
 
-  // 订阅 settingsScope 的 footerStack 字段并应用到槽容器布局；
-  // 设置-插件卡片里改开关时这里会即时生效（无需刷新）。
+  // footerStack：订阅 settingsScope 并应用到 footer 槽容器（anchor 的父级）。
   useEffect(() => {
     if (!scope) return
     let alive = true
@@ -261,92 +303,112 @@ function GuardRestartRow({ t, wide, scope }) {
     return () => { alive = false; if (unsub) unsub() }
   }, [scope])
 
-  // Create the visible node and seat it above the footer-actions row.
-  useEffect(() => {
-    injectStyles()
-    const anchor = anchorRef.current
-    if (!anchor) return
-    mountedRef.current = true
-
-    const node = document.createElement('div')
-    node.className = 'dgr-seat'
-    nodeRef.current = node
-
-    const clsOf = (el) => {
-      const c = el.className
-      return (typeof c === 'string' ? c : (c && c.baseVal)) || ''
-    }
-    const seat = () => {
-      if (!mountedRef.current) return
-      // footerStack：让 anchor 所在槽容器（sidebar.footer.action）竖排，
-      // 各插件的按钮/徽章各自独占一行；开关在设置-插件卡片里。
-      if (anchor.parentElement) {
-        anchor.parentElement.classList.toggle('dgr-footer-stack', !!stackRef.current)
+  // paint：按最新状态刷新圆钮外观与位置（幂等；style 不触发 childList）。
+  const paint = useCallback((btn, box) => {
+    if (!btn) return
+    try {
+      const s = stateRef.current
+      const fh = s.fuhuobiOk
+      if (fh === false) {
+        btn.dataset.dgrMode = 'install'
+        btn.className = 'dgr-nub dgr-nub-warn' + (s.ensureBusy ? ' dgr-nub-busy' : '')
+        btn.textContent = s.ensureBusy ? '…' : '✚'
+        btn.title = s.ensureBusy ? (s.t('installing') || 'installing') : (s.ensureError ? (s.t('failedInstall') || 'failed') : (s.t('missing') || 'missing'))
+        btn.disabled = !!s.ensureBusy
+      } else {
+        btn.dataset.dgrMode = s.armed ? 'confirm' : 'restart'
+        btn.className = 'dgr-nub' + (s.armed ? ' dgr-nub-armed' : '')
+        btn.textContent = s.armed ? '✓' : '↻'
+        btn.title = s.armed ? (s.t('armed') || 'confirm') : (s.t('hint') || '')
+        btn.disabled = false
       }
-      // 槽渲染器可能包裹一层，往祖先链上找到真正的脚区（class 含 footArea）。
-      let foot = anchor.parentElement
-      while (foot && !clsOf(foot).includes('footArea')) {
-        foot = foot.parentElement
+      const b = box || (btn.parentElement && isBox(btn.parentElement) ? btn.parentElement : null)
+      if (b) {
+        // 避让同行 [data-nio-rst]（硬性重启）与 [data-fuhuobi-rst]（复活币存币钮）。
+        const nio = b.querySelector('[data-nio-rst]')
+        const fhb = b.querySelector('[data-fuhuobi-rst]')
+        btn.style.setProperty('right', (8 + (nio ? 34 : 0) + (fhb ? 34 : 0)) + 'px', 'important')
+        const collapsed = b.closest('[class*="collapsed"]') !== null
+        btn.style.setProperty('display', collapsed ? 'none' : 'inline-flex', 'important')
+      } else {
+        btn.style.setProperty('right', '8px', 'important')
       }
-      if (!foot) return
-      // 目标行序（脚区是列布局）：[本行] → [cost-meter 等 footer-actions 行] → [设置行]
-      // 按钮放在脚区最前 = cost-meter 行的上方。
-      if (foot.firstElementChild !== node) {
-        foot.insertBefore(node, foot.firstElementChild)
-      }
-    }
-    seat()
-    const observer = new MutationObserver(seat)
-    let foot = anchor.parentElement
-    while (foot && !clsOf(foot).includes('footArea')) foot = foot.parentElement
-    if (foot) observer.observe(foot, { childList: true })
-
-    return () => {
-      mountedRef.current = false
-      observer.disconnect()
-      if (node.parentElement) node.parentElement.removeChild(node)
-      nodeRef.current = null
-    }
+    } catch { /* 本按钮问题绝不影响页面 */ }
   }, [])
 
-  // Rebuild the imperative node whenever state/locale changes.
+  // supervisor：把圆钮注入设置行并保活（幂等 reconcile，参考 fuhuobi）。
   useEffect(() => {
-    const node = nodeRef.current
-    if (!node) return
-    while (node.firstChild) node.removeChild(node.firstChild)
-    if (!wide) {
-      node.className = 'dgr-seat-rail'
-    } else {
-      node.className = 'dgr-seat'
-    }
-    if (!wide) {
-      const btn = document.createElement('button')
-      btn.className = 'dgr-btn-rail'
-      btn.title = t('hint')
-      btn.textContent = armed ? '✓' : '↻'
-      btn.onclick = () => restartRef.current()
-      node.appendChild(btn)
-      return
-    }
-    const btn = document.createElement('button')
-    btn.className = 'dgr-btn' + (armed ? ' armed' : '')
-    btn.title = t('hint')
-    btn.textContent = armed ? t('armed') : ('↻ ' + t('btn'))
-    btn.onclick = () => restartRef.current()
-    node.appendChild(btn)
-    if (fuhuobiOk === false) {
-      const mini = document.createElement('button')
-      mini.className = 'dgr-mini'
-      mini.disabled = ensureBusy
-      mini.title = t('missing')
-      mini.textContent = ensureBusy ? t('installing') : (ensureError ? t('failedInstall') : t('install'))
-      mini.onclick = () => ensureRef.current()
-      node.appendChild(mini)
-    }
-  }, [t, wide, armed, fuhuobiOk, ensureBusy, ensureError])
+    injectStyles()
+    let disposed = false
+    let running = false
+    let timer = null
+    let heartbeat = null
 
-  // Initial status probe.
+    const reconcile = () => {
+      if (disposed || running) return
+      running = true
+      try {
+        const all = Array.from(document.querySelectorAll('[data-dgr-nub]'))
+        if (all.length > 1) {
+          const boxTmp = resolveBox()
+          const keep = (boxTmp && all.find((b) => boxTmp.contains(b))) || all[0]
+          for (const b of all) if (b !== keep) { try { b.remove() } catch {} }
+        }
+        let btn = document.querySelector('[data-dgr-nub]')
+        if (btn && btn.dataset.dgrVersion !== BTN_VERSION) {
+          try { btn.remove() } catch {}
+          btn = null
+        }
+        const box = resolveBox()
+        if (!box) {
+          // 设置行还不存在：若按钮已被孤立挂到别处则收走，避免游离。
+          if (btn && btn.isConnected && btn.parentElement && btn.parentElement !== document.body) {
+            try { btn.remove() } catch {}
+          }
+          return
+        }
+        if (!btn || !btn.isConnected) {
+          btn = createNub(() => restartRef.current(), () => ensureRef.current())
+          btnRef.current = btn
+          box.appendChild(btn)
+        } else if (!box.contains(btn)) {
+          box.appendChild(btn) // 领养移动：监听器随元素保留，不重建
+        }
+        if (getComputedStyle(box).position === 'static') {
+          try { box.style.position = 'relative' } catch {}
+        }
+        paint(btn, box)
+      } catch { /* 本按钮崩溃绝不致黑屏 */ } finally { running = false }
+    }
+
+    const schedule = () => {
+      if (disposed || running) return
+      running = true
+      try { reconcile() } finally { running = false }
+    }
+    const moBody = new MutationObserver(schedule)
+    const moHead = new MutationObserver(schedule)
+    try { moBody.observe(document.body, { childList: true, subtree: true }) } catch {}
+    try { moHead.observe(document.head, { childList: true }) } catch {}
+    schedule()
+    timer = setTimeout(schedule, 800)
+    heartbeat = setInterval(schedule, 3000)
+
+    return () => {
+      disposed = true
+      if (timer) clearTimeout(timer)
+      if (heartbeat) clearInterval(heartbeat)
+      try { moBody.disconnect() } catch {}
+      try { moHead.disconnect() } catch {}
+      const b = btnRef.current
+      if (b && b.isConnected && b.parentElement) { try { b.parentElement.removeChild(b) } catch {} }
+      btnRef.current = null
+    }
+  }, [paint])
+
+  // Initial status probe + paint on state change.
   useEffect(() => { loadStatus() }, [loadStatus])
+  useEffect(() => { const b = btnRef.current; if (b) paint(b, b.parentElement) }, [paint, armed, fuhuobiOk, ensureBusy, ensureError])
 
   // Auto-disarm the confirmation after a few seconds.
   useEffect(() => {
@@ -422,22 +484,17 @@ function GuardRestartRow({ t, wide, scope }) {
     }
   }, [restarting, t])
 
-  // React renders nothing visible: only the invisible anchor.
+  // React 渲染不可见锚点（占住 footer 槽位；footerStack 开关需要其父容器）。
   return h('span', { ref: anchorRef, style: { display: 'none' } })
 }
 
 function GuardStatusCard({ scope, t }) {
-  // 设置 > 插件 > 插件配置：「守护重启」状态卡片。
-  // 展示 systemd 配置状态、fuhuobi 是否已安装，并可切换 footerStack 开关
-  // （侧边栏底部按钮各占一行）；其余信息只读、不编辑配置：
-  // 数据来自宿主 /dsh-guard-restart/status（每次请求实时计算，非缓存）。
   const [open, setOpen] = useState(false)
   const [status, setStatus] = useState(null)
   const [busy, setBusy] = useState(false)
   const [failed, setFailed] = useState(false)
   const [fsSaving, setFsSaving] = useState(false)
 
-  // footerStack 开关：读 settingsScope（namespace 由宿主注册）。
   const subscribe = React.useMemo(
     () => (scope && scope.subscribe ? scope.subscribe.bind(scope) : (() => () => {})),
     [scope],
@@ -548,33 +605,35 @@ function GuardStatusCard({ scope, t }) {
 exports.name = 'dsh-guard-restart'
 exports.inject = ['slots', 'locale', 'settingsScope']
 exports.apply = function apply(ctx) {
-  ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-guard-restart: dictionaries')
+  try {
+    ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-guard-restart: dictionaries')
+  } catch { /* locale unavailable: degrade quietly */ }
   const t = ctx.locale.bind(NS)
-  // settingsScope 一次 bind，供侧边栏按钮（footerStack 布局）与设置-插件卡片共用；
-  // 无 settings 服务时 scope 为 null，两侧都按默认值工作。
   let scope = null
   try { scope = ctx.settingsScope.bind({ namespace: NS }) } catch { /* no settings service */ }
-  ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
-    name: 'sidebar.footer.action',
-    id: 'dsh-guard-restart',
-    order: 0,
-    label: () => '守护重启',
-  }, ({ wide }) => h(GuardRestartRow, { t, wide, scope })))
+  try {
+    ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
+      name: 'sidebar.footer.action',
+      id: 'dsh-guard-restart',
+      order: 0,
+      label: () => '守护重启',
+    }, ({ wide }) => h(GuardRestartRow, { t, wide, scope })))
+  } catch { /* slot unavailable: button absent, rest unaffected */ }
 
   // 设置 > 插件 > 插件配置：「守护重启」状态卡片（含 footerStack 开关）。
-  // namespace 由宿主侧 settings.register('dsh-guard-restart', …) 提供；
-  // 无 settings 服务时静默跳过，不影响侧边栏按钮。
   if (scope) {
-    ctx.slots.inject('settings.plugin.item', function* () {
-      yield ctx.slots.register({
-        name: 'settings.plugin.item',
-        key: NS,
-        id: NS,
-        order: 50,
-        label: '守护重启',
-        inject: () => ({ scope }),
-      }, (props) => h(GuardStatusCard, Object.assign({ t }, props)))
-    })
+    try {
+      ctx.slots.inject('settings.plugin.item', function* () {
+        yield ctx.slots.register({
+          name: 'settings.plugin.item',
+          key: NS,
+          id: NS,
+          order: 50,
+          label: '守护重启',
+          inject: () => ({ scope }),
+        }, (props) => h(GuardStatusCard, Object.assign({ t }, props)))
+      })
+    } catch { /* no settings card */ }
   }
 }
 
