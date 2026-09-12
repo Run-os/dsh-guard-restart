@@ -1,7 +1,7 @@
 {
   "name": "dsh-guard-restart",
-  "version": "0.8.0",
-  "description": "DSH 守护重启（自带守护链，不再依赖 dsh-fuhuobi 复活币）：在左侧边栏「设置」行内提供一键守护重启圆钮；重启走自带的 boot-guard 守护启动（启动清单→快照→两阶段健康检查→失败自动回滚→成功存回滚快照），systemd 托管时经 systemctl 重启单元。Guard-restart for DeepSeek Harness: bundled guarded boot (launch manifest, snapshot, health check, auto rollback); no dsh-fuhuobi dependency.",
+  "version": "0.9.0",
+  "description": "DSH 守护重启（自带守护链，不再依赖 dsh-fuhuobi 复活币）：在左侧边栏「设置」行内提供一键守护重启圆钮；重启走自带的 boot-guard 守护启动（启动清单→快照→两阶段健康检查→失败自动回滚→成功存回滚快照），systemd 托管时经 systemctl 重启单元。v0.9.0 起：页面卡 Loading plugins 时自动禁用肇事的插件（失败态），挂起态页面内提供恢复面板（插件启用/禁用切换 + 重启）。Guard-restart for DeepSeek Harness: bundled guarded boot; auto-disables the plugin that breaks client boot and offers a page-side recovery panel.",
   "type": "module",
   "main": "lib/index.js",
   "license": "MIT",

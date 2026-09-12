@@ -5,7 +5,7 @@ DSH 插件：**守护重启（自带守护链，不再依赖 dsh-fuhuobi 复活�
 - 在左侧边栏 **「设置」行内**放一个「守护重启」小圆钮（⟳，与设置按钮同一行）。
 - 在 **设置 → 插件** 界面新增「守护重启」菜单（卡片）：展示 **自带守护链状态**（boot-guard / guard-cli / 启动清单）、**systemd 配置状态** 与 **回滚快照**，每次打开/刷新实时读取 `/status`。
 - 重启走 **插件自带的守护进程**：`systemctl restart dsh-web.service`（systemd 托管时）→ run-dsh-web.sh（清端口）→ boot-guard.sh（两阶段健康检查 → 失败自动回滚重试 → 成功自动存回滚快照）；无 systemd 时由重启执行器直启 boot-guard。
-- 启动后 6s 自动自检守护链，**缺什么自动补什么 / 旧版自动升级**（boot-guard.sh / run-dsh-web.sh / guard/guard-cli.js / systemd 单元 / enable；无 systemd 时回退 cron `@reboot`）——幂等且不打断当前会话。
+- 启动后 6s 自动自检守护链，**缺什么自动补什么 / 旧版自动升级**（boot-guard.sh / run-dsh-web.sh / guard/guard-cli.mjs / systemd 单元 / enable；无 systemd 时回退 cron `@reboot`）——幂等且不打断当前会话。
 - **v0.7.0 起不再提供「侧边栏底部按钮各占一行」（`footerStack`）**：已迁移到 **dsh-eco-fixes**。
 
 > **v0.8.0 变更（2026-09-11）**：不再安装 / 依赖 dsh-fuhuobi（复活币）。原版权
@@ -14,6 +14,17 @@ DSH 插件：**守护重启（自带守护链，不再依赖 dsh-fuhuobi 复活�
 > （快照/回滚/存回滚快照/事故报告，自包含仅用 node 内置模块）、守护重启代理
 > （scheduleGuardedRestart + 客户端 /booted 回执）。整条 "重启 → 守护启动 →
 > 失败回滚" 的链路本插件自己闭环。
+>
+> **v0.9.0 变更（2026-09-11）**：页面卡 "Loading plugins" 的自动/手动处置。
+> - **失败态**（"Failed to load plugins" + 报错带插件名）：看门狗上报 → boot-guard
+>   Phase 3 自动禁用元凶（`cordis.patch.yml` 追加 `disabled: true`，仅动这一个，
+>   快照/回滚不受影响）→ 重启重试一次；仍失败则只提示不连禁。
+> - **挂起态**（"Loading plugins…" 永久转圈，无报错）：无法定位元凶，**不自动
+>   动作** —— 页面叠出**恢复面板**：全部插件清单 + 逐个「启用/禁用」切换 +
+>   底部「重启 DSH」。
+> - **存快照时机修正**：原来端口健康就存「良好快照」，升级→挂起会把坏状态抢先
+>   登记成良好快照；v0.9.0 推迟到**页面确认可交互**（`/booted` 或确认窗口结束），
+>   挂起/失败态不再覆盖回滚快照 → 手动回滚才能真正回到升级前版本。
 
 ## 安装
 
@@ -52,6 +63,10 @@ dsh plugin --profile web add /root/deepseek/project/dsh-guard-restart
 | `POST /dsh-guard-restart/restart` | 守护重启（`?dryRun=1` 只回报计划，用于自检） |
 | `POST /dsh-guard-restart/setup` | 自动设置 / 升级守护链（幂等；`?dryRun=1` 只报告不动手） |
 | `POST /dsh-guard-restart/ensure-enabled` | `systemctl enable dsh-web.service`（开机自启） |
+| `GET  /dsh-guard-restart/plugins` | v0.9.0：全部插件（dependencies+bundles）及启用/禁用/禁删状态 |
+| `POST /dsh-guard-restart/plugin-set` | v0.9.0：切换某插件启用/禁用（写 `cordis.patch.yml` + ledger） |
+| `POST /dsh-guard-restart/plugin-stuck` | v0.9.0：客户端看门狗上报页面加载报错/挂起（写崩溃标记） |
+| `GET  /dsh-guard-restart/loader-entries` | v0.9.0：诊断用，枚举 loader entry（校准 entryId 映射） |
 
 ## 自动设置（Setup）
 
@@ -62,7 +77,7 @@ dsh plugin --profile web add /root/deepseek/project/dsh-guard-restart
 | --- | --- |
 | `$DSH_HOME/boot-guard.sh` | 从随包资产 `lib/assets/boot-guard.sh` 写入（chmod 755）；旧版先备份 `.bak-<stamp>` 再替换 |
 | `$DSH_HOME/run-dsh-web.sh` | 同上（清端口 → `exec boot-guard`） |
-| `$DSH_HOME/guard/guard-cli.js` | 从随包资产 `lib/assets/guard-cli.js` 写入（自包含 CLI，chmod 755） |
+| `$DSH_HOME/guard/guard-cli.mjs` | 从随包资产 `lib/assets/guard-cli.mjs` 写入（自包含 CLI，chmod 755） |
 | `/etc/systemd/system/dsh-web.service` | 按模板生成（Type=simple / KillMode=control-group / Restart=always / ExecStart=包装脚本），`daemon-reload` 后 `enable` |
 | 无 systemd 的 Linux | 回退写 cron `@reboot` 条目（以 `# dsh-guard-restart` 标记幂等替换） |
 | macOS / Windows | 记录为不支持（不在范围内） |
@@ -72,7 +87,7 @@ dsh plugin --profile web add /root/deepseek/project/dsh-guard-restart
 1. **幂等**：资产带版本标记（`dsh-guard-restart-asset: <file> vN`）即视为最新 → no-op
    （零 systemctl 调用）；旧版（含历史 dsh-fuhuobi 副本）先备份再替换。
 2. **不打断当前会话**：插件自身就跑在 dsh web 进程里，因此 setup **只 `enable`、绝不 `start/restart`**。
-3. **绝不拖垮 dsh**：guard-cli.js 自包含（仅 node 内置模块），不依赖任何 profile 依赖。
+3. **绝不拖垮 dsh**：guard-cli.mjs 自包含（仅 node 内置模块），不依赖任何 profile 依赖。
 
 ## 设置 → 插件：守护重启菜单
 
@@ -105,6 +120,57 @@ dsh plugin --profile web add /root/deepseek/project/dsh-guard-restart
 6. 重启过程与每次启动的守护链记录在 `$DSH_HOME/guard/logs/`
    （boot-*.log / server-*.log / restart-helper.log / incident-*.md）。
 
+### boot-guard 三阶段（v0.9.0）
+
+```
+启动 DSH → ① 60s 端口健康？
+  ├─ 否 → 杀进程 → guard rollback --good → 重启 → ② 30s 再试（不变）
+  └─ 是 → ③ 页面确认窗口（PAGE_WAIT_SEC，默认 75s）：
+            ├─ 崩溃标记(bootId 匹配)：
+            │    ├─ 失败态(带插件名) → 自动禁用元凶 → 重启重试一次
+            │    └─ 挂起态(无名字)   → 不自动动作（页面恢复面板人工处置）
+            ├─ /booted=true → 页面确认可交互 → 存「良好快照」
+            └─ 窗口耗尽（headless） → 按端口信号保底存快照
+```
+
+## 页面卡 "Loading plugins" 的自动处置（v0.9.0）
+
+dsh 客户端的规则：任一插件客户端 entry 加载失败（并行 `Promise.all` 一个拒绝即全崩）
+→ 页面停在 "Failed to load plugins"（**失败态**，报错带插件名）；若某个 entry 加载
+永不返回，则永久转圈（**挂起态**，无任何报错）。两者都意味着应用未挂载、正常 GUI
+不可用。处置：
+
+| 状态 | 自动 | 手动 |
+| --- | --- | --- |
+| 失败态（有名字） | 看门狗上报 → boot-guard 自动禁用元凶（ patch `disabled: true`）→ 重启重试一次 | 恢复面板也可手动禁用/恢复 |
+| 挂起态（无名字） | **不自动**（无法定位元凶） | 恢复面板：全部插件逐个启用/禁用 + 底部「重启 DSH」 |
+| 端口都不通 | 整体回滚（原有逻辑，不变） | — |
+
+- **看门狗**住在本插件 client（factory 物化即运行）：本插件 chunk 在并行 boot
+  期间必然被加载（除非挂起/失败的就是核心包或本插件自己），所以即使页面没起来
+  看门狗也活着，能检测 splash 三态、上报（`POST /plugin-stuck`）、并叠恢复面板。
+- **禁用机制** = `cordis.patch.yml` 追加 `- id: <entryId>` + `disabled: true`
+  （dsh-client-modules 扫描跳过 disabled entry，不进客户端 manifest）。不卸依赖、
+  不动锁文件、可一键恢复（面板「启用」/ `guard plugin-enable` / 删行），配置文件
+  本就是回滚快照的 5 个成员之一。ledger 在 `$DSH_HOME/guard/disabled-plugins.json`。
+- **entryId ≠ 包名**：loader 按插件注册名定位（如 dsh-guard-restart → `guard-restart`、
+  dsh-host-webserver → `webserver`），映射见代码 KNOWN_ENTRY_IDS / guard config
+  `entryIds`（可用 `GET /loader-entries` 校准）。
+- **安全铁律**：禁删名单（核心组件 + 本插件自己）；每次启动最多自动禁用 1 个；
+  禁用后仍失败只提示不再连禁；挂起态永不自动禁用；`/plugin-stuck` 只接受存在于
+  profile 依赖清单里的插件名。
+- **前提**：本功能只依赖 loopback 的 303 cookie 流程（`curl -L` 带 cookie jar），
+  不触碰 `healthy()` 的 Host 豁免，也不要求客户端上报鉴权。
+
+**命令行参考**（`node $DSH_HOME/guard/guard-cli.mjs <cmd>`，任何时刻都可用）：
+
+| 命令 | 作用 |
+| --- | --- |
+| `plugins` | 列出 profile 全部插件及启用状态（entryId 一并显示） |
+| `plugin-disable <name> [--entry-id X] [--reason R]` | 禁用插件（自动拍了 pre-disable 快照） |
+| `plugin-enable <name> [--entry-id X]` | 恢复插件 |
+| `crash-check --boot <bootId>` | 读页面崩溃标记并给处置建议（boot-guard Phase 3 内部用） |
+
 ## 启动清单（guard/launch.json）
 
 每次「确认可用」的启动（宿主启动 + 客户端 /booted 回执）都会把当前进程的启动方式
@@ -120,7 +186,7 @@ dsh-fuhuobi 的 rebuildLaunch/writeLaunchManifest）。
 | 开机自启 | ✅ 可自动设置 | DSH 没运行时插件不存在，无法自己执行——但**守护链可以自动搭建**：`POST /setup` 或启动自检会生成 `dsh-web.service` 并 `enable`，开机拉起交给 systemd（或无 systemd 时的 cron `@reboot`）。前提是宿主有 systemd/cron。 |
 | 退出 DSH | ✅ 可发起 | 插件在宿主进程内：`process.exit()` 会触发 systemd `Restart=always` 再次拉起（等效重启）；要**真正停止**需外部 `systemctl stop dsh-web`。 |
 | 重启 DSH | ✅ 可发起且推荐守护方式 | 本插件即此：`systemctl restart`（走自带 boot-guard 守护启动，失败自动回滚、成功存回滚快照）；兜底为 boot-guard 直启 / 自拉起。 |
-| 修复损坏配置 | ✅ 可 | 守护启动失败自动回滚到最近良好快照；亦可手动 `node $DSH_HOME/guard/guard-cli.js rollback --good`。 |
+| 修复损坏配置 | ✅ 可 | 守护启动失败自动回滚到最近良好快照；亦可手动 `node $DSH_HOME/guard/guard-cli.mjs rollback --good`。 |
 
 一句话：**自动启动交给 systemd，退出/重启由插件发起，失败自愈由自带守护链完成** —— 三者组合即完整闭环。
 
@@ -131,6 +197,8 @@ dsh-fuhuobi 的 rebuildLaunch/writeLaunchManifest）。
 - `DSH_GUARD_UNIT_DIR`（默认 `/etc/systemd/system`）：setup 把单元写到哪个目录（测试用）。
 - `DSH_GUARD_PLATFORM`（默认 `auto`）：强制平台判定（`systemd` / `cron` / `launchd` / `none`，测试用）。
 - `DSH_GUARD_PNPM`：回滚时 pnpm install 的启动器覆盖（默认 PATH / harness 本地 .bin）。
+- `PAGE_WAIT_SEC`（boot-guard 环境变量，默认 `75`）：Phase 3 页面确认窗口宽度；
+  `FIRST_WAIT_SEC` / `RETRY_WAIT_SEC` 同理可调。
 
 ## 依赖与 link: 安装（2026-09-11 故障复盘）
 
@@ -145,7 +213,7 @@ dsh-fuhuobi 的 rebuildLaunch/writeLaunchManifest）。
   目录为解析锚点**同步解析 schemastery。源目录有没有 node_modules 都不再影响
   插件加载；解析失败只降级隐藏「设置-插件」卡片，**绝不拖垮 dsh**。
 - **v0.8.0 起运行时代码零顶层依赖**（node 内置模块 + 运行时 createRequire），
-  `lib/assets/guard-cli.js` 完全自包含，可在 profile 依赖全坏时独立工作。
+  `lib/assets/guard-cli.mjs` 完全自包含，可在 profile 依赖全坏时独立工作。
 - 排查入口：宿主日志 `[dsh-guard-restart]` 前缀 + `$DSH_HOME/guard/logs/`。
 
 ## 卸载 / 回滚
@@ -159,7 +227,7 @@ systemctl restart dsh-web
 若已不再需要 fuhuobi 本身，可另行 `dsh plugin --profile web remove dsh-fuhuobi`
 （重启链已由本插件自带，不受影响）。
 setup 生成的文件（`$DSH_HOME/boot-guard.sh`、`$DSH_HOME/run-dsh-web.sh`、
-`$DSH_HOME/guard/guard-cli.js`、`/etc/systemd/system/dsh-web.service` 及 crontab
+`$DSH_HOME/guard/guard-cli.mjs`、`/etc/systemd/system/dsh-web.service` 及 crontab
 `# dsh-guard-restart` 行）不在插件卸载范围内，按需自行删除。
 
 ## License

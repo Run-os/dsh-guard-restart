@@ -37,10 +37,270 @@ const React = require('react')
 const h = React.createElement
 const { useState, useEffect, useRef, useCallback } = React
 
+// ---------------------------------------------------------------------------
+// v0.9.0 启动看门狗 + 恢复面板（纯 DOM，不依赖 React/应用挂载）。
+// 触发点 = 本插件 chunk 在并行 client boot 期间被物化（即使其它插件卡死/报错，
+// 只要本 chunk 能加载，这里的代码就会跑）。检测 splash 三态：
+//   - splash 消失           → boot 正常，什么都不做（/booted 回执走正常路径）
+//   - "Failed to load plugins" → 失败态：解析元凶名字上报 → 弹恢复面板
+//   - 长时间仍 "Loading plugins…" → 挂起态：上报(无名字) → 弹恢复面板供手动
+// ---------------------------------------------------------------------------
+
+const NS2 = 'dsh-guard-restart'
+const WATCH_POLL_MS = 2000
+const HANG_TIMEOUT_MS = 90000
+
+function dgrPanelCss() {
+  if (document.querySelector('style[data-plugin-css="dsh-guard-restart-panel"]')) return
+  const tag = document.createElement('style')
+  tag.dataset.plugin = NS2
+  tag.dataset.pluginCss = 'dsh-guard-restart-panel'
+  tag.textContent = `
+.dgrp{position:fixed;top:16px;right:16px;z-index:9500;width:min(420px,92vw);max-height:80vh;overflow:auto;background:var(--dsw-alias-bg-layer-1,#fff);border:1px solid var(--dsw-alias-border-l2,#d0d5dd);border-radius:14px;box-shadow:0 20px 60px rgba(0,0,0,.32);padding:16px;box-sizing:border-box;font:13px/1.6 system-ui,Segoe UI,Roboto,sans-serif;color:var(--dsw-alias-label-primary,#1f2328);text-align:left}
+.dgrp h3{margin:0 0 6px;font-size:14px;font-weight:700}
+.dgrp .dgrp-sub{margin:0 0 10px;font-size:12px;color:var(--dsw-alias-label-secondary,#6b7280);white-space:pre-wrap;word-break:break-word}
+.dgrp .dgrp-item{display:flex;align-items:center;gap:8px;padding:5px 2px;border-top:1px solid var(--dsw-alias-border-l1,#eef0f3)}
+.dgrp .dgrp-name{flex:1;min-width:0;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dgrp .dgrp-badge{flex:none;font-size:11px;padding:0 6px;border-radius:999px}
+.dgrp .dgrp-on{background:rgba(22,163,74,.12);color:#16a34a}
+.dgrp .dgrp-off{background:rgba(107,114,128,.12);color:#6b7280}
+.dgrp .dgrp-block{background:rgba(180,83,9,.12);color:#b45309}
+.dgrp button{font:inherit;font-size:12px;cursor:pointer;border:1px solid var(--dsw-alias-border-l2,#d0d5dd);background:var(--dsw-alias-bg-layer-2,#f8fafc);border-radius:8px;padding:3px 10px;flex:none}
+.dgrp button:disabled{opacity:.55;cursor:not-allowed}
+.dgrp button.dgrp-danger{background:rgba(220,38,38,.1);border-color:rgba(220,38,38,.35);color:#dc2626}
+.dgrp .dgrp-actions{display:flex;gap:8px;margin-top:12px;align-items:center;flex-wrap:wrap}
+.dgrp .dgrp-actions button.dgrp-restart{background:var(--dsw-alias-button-primary-fill,#4f6ef7);color:#fff;border:none;padding:6px 16px;font-weight:600}
+.dgrp .dgrp-note{font-size:11px;color:var(--dsw-alias-label-secondary,#6b7280);margin:8px 0 0}
+.dgrp .dgrp-x{position:absolute;top:8px;right:10px;border:none;background:none;font-size:15px;color:var(--dsw-alias-label-secondary,#6b7280);cursor:pointer}
+.dgrp .dgrp-empty{padding:8px 2px;color:var(--dsw-alias-label-secondary,#6b7280);font-size:12px}
+`
+  document.head.appendChild(tag)
+}
+
+/** 从错误消息/DOM 文本里尽量提取插件名（服务端还会按 deps 名单做二次校验）。 */
+function dgrExtractNames(message, allText) {
+  const set = new Set()
+  const msgs = [message, allText].filter(Boolean).join('\n')
+  let m
+  const re = /loader\s+entry\s+[0-9a-f]+\s*\(([^()]+)\)/gi
+  while ((m = re.exec(msgs))) { const n = m[1].trim(); if (n) set.add(n) }
+  for (const line of msgs.split(/\r?\n/)) {
+    const t = line.trim()
+    if (!t || t.startsWith('web boot:')) continue
+    const idx = t.indexOf(':')
+    const cand = idx > 0 ? t.slice(0, idx).trim() : ''
+    if (cand && cand.length <= 120 && !/^(failed|loading|import|pending|waiting|unknown|active|unloading|disposed)/i.test(cand)) set.add(cand)
+  }
+  return [...set]
+}
+
+/** 面板：插件清单 + 启用/禁用切换 + 底部重启。 */
+function dgrShowPanel(phase, message) {
+  dgrPanelCss()
+  if (document.querySelector('.dgrp')) return
+  const box = document.createElement('div')
+  box.className = 'dgrp'
+  box.style.position = 'fixed'
+  const xBtn = document.createElement('button')
+  xBtn.className = 'dgrp-x'
+  xBtn.textContent = '×'
+  xBtn.onclick = () => {
+    window.__dgrPanelDismissed = true
+    if (box.parentElement) box.parentElement.removeChild(box)
+  }
+  const title = document.createElement('h3')
+  title.textContent = phase === 'failed' ? '页面加载报错 — 插件可在此处置' : '页面加载卡住 — 可在此手动处置'
+  const sub = document.createElement('p')
+  sub.className = 'dgrp-sub'
+  sub.textContent = phase === 'failed'
+    ? (message ? message : '检测到插件加载报错，已上报守护链。下方可手动禁用/恢复插件。')
+    : '原因未知（没有报错信息），无法自动定位元凶，请手动选择要禁用的插件，或回滚、重启。'
+  const list = document.createElement('div')
+  const actions = document.createElement('div')
+  actions.className = 'dgrp-actions'
+  const restartBtn = document.createElement('button')
+  restartBtn.className = 'dgrp-restart'
+  restartBtn.textContent = '重启 DSH'
+  const refreshBtn = document.createElement('button')
+  refreshBtn.textContent = '刷新清单'
+  const note = document.createElement('p')
+  note.className = 'dgrp-note'
+  refreshBtn.onclick = () => { refreshBtn.disabled = true; dgrLoadList(list, note); setTimeout(() => { refreshBtn.disabled = false }, 1500) }
+  restartBtn.onclick = () => { restartBtn.disabled = true; restartBtn.textContent = '重启中…'; dgrPanelRestart(restartBtn, note) }
+  actions.appendChild(refreshBtn)
+  actions.appendChild(restartBtn)
+  box.appendChild(xBtn)
+  box.appendChild(title)
+  box.appendChild(sub)
+  box.appendChild(list)
+  box.appendChild(actions)
+  box.appendChild(note)
+  document.body.appendChild(box)
+  dgrLoadList(list, note)
+}
+
+function dgrLoadList(list, note) {
+  list.textContent = ''
+  fetch('/dsh-guard-restart/plugins', { cache: 'no-store' })
+    .then((r) => { if (!r.ok) throw new Error(String(r.status)); return r.json() })
+    .then((data) => {
+      const plugins = (data && data.plugins) || []
+      if (plugins.length === 0) {
+        const empty = document.createElement('div')
+        empty.className = 'dgrp-empty'
+        empty.textContent = '没有可枚举的插件（可能 host 路由不可达）。'
+        list.appendChild(empty)
+        return
+      }
+      if (note) note.textContent = '切换后需点「重启 DSH」使其生效；恢复面板只在页面未能正常加载时出现。'
+      for (const p of plugins) {
+        const row = document.createElement('div')
+        row.className = 'dgrp-item'
+        const name = document.createElement('span')
+        name.className = 'dgrp-name'
+        name.textContent = (p.bundle ? '◆ ' : '') + p.name + ' (' + p.entryId + ')'
+        name.title = p.name
+        const badge = document.createElement('span')
+        badge.className = 'dgrp-badge ' + (p.blocked ? 'dgrp-block' : (p.enabled ? 'dgrp-on' : 'dgrp-off'))
+        badge.textContent = p.blocked ? '核心组件' : (p.enabled ? '已启用' : '已禁用')
+        const toggle = document.createElement('button')
+        if (p.blocked) {
+          toggle.disabled = true
+          toggle.textContent = '禁删'
+        }
+        else {
+          toggle.className = p.enabled ? 'dgrp-danger' : ''
+          toggle.textContent = p.enabled ? '禁用' : '启用'
+          toggle.onclick = () => {
+            toggle.disabled = true
+            dgrSetPlugin(p.name, !p.enabled, toggle, row, badge)
+          }
+        }
+        row.appendChild(name)
+        row.appendChild(badge)
+        row.appendChild(toggle)
+        list.appendChild(row)
+      }
+    })
+    .catch(() => {
+      const empty = document.createElement('div')
+      empty.className = 'dgrp-empty'
+      empty.textContent = '读取插件清单失败（服务端不可达？）。'
+      list.appendChild(empty)
+    })
+}
+
+function dgrSetPlugin(name, enabled, btn, row, badge) {
+  fetch('/dsh-guard-restart/plugin-set', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name, enabled }),
+  })
+    .then((r) => r.json())
+    .then((res) => {
+      if (!res || res.ok !== true) {
+        btn.disabled = false
+        badge.textContent = res && res.error ? ('失败: ' + res.error) : '失败'
+        return
+      }
+      badge.textContent = enabled ? '已启用' : '已禁用'
+      badge.className = 'dgrp-badge ' + (enabled ? 'dgrp-on' : 'dgrp-off')
+      btn.textContent = enabled ? '禁用' : '启用'
+      btn.className = enabled ? 'dgrp-danger' : ''
+      btn.disabled = false
+    })
+    .catch(() => { btn.disabled = false; badge.textContent = '请求失败' })
+}
+
+function dgrPanelRestart(restartBtn, note) {
+  const oldBoot = { value: null }
+  fetch('/dsh-guard-restart/ping', { cache: 'no-store' })
+    .then((r) => r.json())
+    .then((d) => { oldBoot.value = d && d.boot })
+    .catch(() => {})
+  fetch('/dsh-guard-restart/restart', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+  }).catch(() => {})
+  const started = Date.now()
+  const poll = setInterval(() => {
+    fetch('/dsh-guard-restart/ping', { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((d) => {
+        if (d && typeof d.boot === 'string' && d.boot !== oldBoot.value) {
+          clearInterval(poll)
+          location.reload()
+        }
+      })
+      .catch(() => {})
+      .then(() => {
+        if (Date.now() - started > 60000) {
+          clearInterval(poll)
+          restartBtn.disabled = false
+          restartBtn.textContent = '重启 DSH'
+          note.textContent = '等待恢复超时：可手动刷新页面，或检查服务日志。'
+        }
+      })
+  }, 1000)
+}
+
+/** 看门狗主循环：factory 物化即启动（window 标志防重复）。 */
+function dgrStartWatchdog() {
+  if (window.__dgrWatchdog) return window.__dgrWatchdog
+  const state = { reported: false, startedAt: Date.now(), timer: null }
+  const isSplash = () => !!document.querySelector('[data-dsh-boot]')
+  const tick = () => {
+    try {
+      if (!isSplash()) {
+        // boot 正常：面板不该出现，撤掉轮询
+        clearInterval(state.timer)
+        state.timer = null
+        const panel = document.querySelector('.dgrp')
+        if (panel && panel.parentElement) panel.parentElement.removeChild(panel)
+        return
+      }
+      const bootRoot = document.querySelector('[data-dsh-boot]')
+      const text = bootRoot ? bootRoot.textContent || '' : ''
+      if (text.indexOf('Failed to load plugins') !== -1) {
+        const names = dgrExtractNames(null, text)
+        if (!state.reported) {
+          state.reported = true
+          fetch('/dsh-guard-restart/plugin-stuck', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ phase: 'failed', message: text.slice(0, 2000), names }),
+          }).catch(() => {})
+        }
+        if (!window.__dgrPanelDismissed) dgrShowPanel('failed', text.slice(0, 400))
+        return
+      }
+      if (Date.now() - state.startedAt > HANG_TIMEOUT_MS) {
+        if (!state.reported) {
+          state.reported = true
+          fetch('/dsh-guard-restart/plugin-stuck', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ phase: 'hang', names: [] }),
+          }).catch(() => {})
+        }
+        if (!window.__dgrPanelDismissed) dgrShowPanel('hang', null)
+      }
+    }
+    catch { /* 看门狗问题绝不影响页面 */ }
+  }
+  state.timer = setInterval(tick, WATCH_POLL_MS)
+  setTimeout(tick, 3000)
+  window.__dgrWatchdog = state
+  return state
+}
+
+try { dgrStartWatchdog() } catch { /* ignore */ }
+
 const NS = 'dsh-guard-restart'
 const POLL_MS = 1000
 const STUCK_AFTER_MS = 60000
-const BTN_VERSION = '0.8.0'
+const BTN_VERSION = '0.9.0'
 
 const zh = {
   btn: '守护重启',
