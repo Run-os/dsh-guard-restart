@@ -214,15 +214,22 @@ function dgrSetPlugin(name, enabled, btn, row, badge) {
 
 function dgrPanelRestart(restartBtn, note) {
   const oldBoot = { value: null }
-  fetch('/dsh-guard-restart/ping', { cache: 'no-store' })
-    .then((r) => r.json())
-    .then((d) => { oldBoot.value = d && d.boot })
-    .catch(() => {})
-  fetch('/dsh-guard-restart/restart', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: '{}',
-  }).catch(() => {})
+  // 必须先拿到旧 boot id 再发重启，否则 restart 后返回的 /ping 可能被当成
+  // 旧值，导致轮询永远看不到 boot id 变化、不自动刷新。
+  const startRestart = async () => {
+    try {
+      const res = await fetch('/dsh-guard-restart/ping', { cache: 'no-store' })
+      if (res.ok) oldBoot.value = (await res.json()).boot
+    } catch { /* 旧服务可能已不可达，保持 null */ }
+    try {
+      await fetch('/dsh-guard-restart/restart', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      })
+    } catch { /* 响应可能在 host 断开时丢失 */ }
+  }
+  startRestart()
   const started = Date.now()
   const poll = setInterval(() => {
     fetch('/dsh-guard-restart/ping', { cache: 'no-store' })
